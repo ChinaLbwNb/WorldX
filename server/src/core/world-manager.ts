@@ -12,7 +12,7 @@ import type {
   DialogueSession,
   SceneConfig,
 } from "../types/index.js";
-import { loadWorldConfig, loadSceneConfig, setWorldDir, getWorldDir } from "../utils/config-loader.js";
+import { loadWorldConfig, loadSceneConfig, setWorldDir, getWorldDir, reloadConfigs } from "../utils/config-loader.js";
 import { setSceneConfig, isSceneComplete, getTicksPerScene } from "../utils/time-helpers.js";
 import * as worldState from "../store/world-state-store.js";
 import * as snapshotStore from "../store/snapshot-store.js";
@@ -53,6 +53,9 @@ export class WorldManager {
   private mainAreaZoneMap: Map<string, MainAreaZone> = new Map();
   private worldActions: WorldActionConfig[] = [];
   private worldSize: WorldSizeConfig | null = null;
+  private collisionData: number[] | null = null;
+  private collisionGridWidth = 0;
+  private collisionGridHeight = 0;
   private sceneConfig!: SceneConfig;
   private worldName = "unknown";
   private worldDescription = "";
@@ -78,6 +81,7 @@ export class WorldManager {
     this.preferredMainAreaPointIds = getLargestMainAreaPointComponent(this.mainAreaPoints);
     this.mainAreaZoneMap = computeMainAreaZones(this.mainAreaPoints);
     this.worldSize = normalizeWorldSize(config.worldSize) ?? inferWorldSizeFromWorldDir();
+    this.loadCollisionGrid();
     this.worldActions = config.worldActions ?? [];
     this.worldName = config.worldName ?? "unknown";
     this.worldDescription = config.worldDescription ?? "";
@@ -564,6 +568,202 @@ export class WorldManager {
 
   listSnapshots(): SnapshotMeta[] {
     return snapshotStore.listSnapshots();
+  }
+
+  /** 检查像素坐标是否可行走 */
+  isPixelWalkable(pixelX: number, pixelY: number): boolean {
+    if (!this.collisionData || !this.worldSize?.tileSize) {
+      // 没有碰撞数据时默认所有位置都可行走
+      return true;
+    }
+    const tileSize = this.worldSize.tileSize;
+    const gx = Math.floor(pixelX / tileSize);
+    const gy = Math.floor(pixelY / tileSize);
+    if (gx < 0 || gy < 0 || gx >= this.collisionGridWidth || gy >= this.collisionGridHeight) {
+      return false;
+    }
+    return this.collisionData[gy * this.collisionGridWidth + gx] === 0;
+  }
+
+  /** 在中心点附近寻找一个可行走的像素点（螺旋搜索） */
+  findWalkablePixelNear(centerX: number, centerY: number, maxRadiusPx = 200): { x: number; y: number } | null {
+    if (!this.collisionData || !this.worldSize?.tileSize) {
+      return { x: centerX, y: centerY };
+    }
+
+    const tileSize = this.worldSize.tileSize;
+    const centerGx = Math.floor(centerX / tileSize);
+    const centerGy = Math.floor(centerY / tileSize);
+    const radiusTiles = Math.ceil(maxRadiusPx / tileSize);
+
+    // 螺旋搜索：从中心向外扩展
+    for (let r = 0; r <= radiusTiles; r++) {
+      // 顶部行
+      for (let dx = -r; dx <= r; dx++) {
+        const gx = centerGx + dx;
+        const gy = centerGy - r;
+        if (this.isTileWalkable(gx, gy)) {
+          return {
+            x: gx * tileSize + tileSize / 2,
+            y: gy * tileSize + tileSize / 2,
+          };
+        }
+      }
+      // 底部行
+      for (let dx = -r; dx <= r; dx++) {
+        const gx = centerGx + dx;
+        const gy = centerGy + r;
+        if (this.isTileWalkable(gx, gy)) {
+          return {
+            x: gx * tileSize + tileSize / 2,
+            y: gy * tileSize + tileSize / 2,
+          };
+        }
+      }
+      // 左侧列（排除已检查的上下角）
+      for (let dy = -r + 1; dy < r; dy++) {
+        const gx = centerGx - r;
+        const gy = centerGy + dy;
+        if (this.isTileWalkable(gx, gy)) {
+          return {
+            x: gx * tileSize + tileSize / 2,
+            y: gy * tileSize + tileSize / 2,
+          };
+        }
+      }
+      // 右侧列（排除已检查的上下角）
+      for (let dy = -r + 1; dy < r; dy++) {
+        const gx = centerGx + r;
+        const gy = centerGy + dy;
+        if (this.isTileWalkable(gx, gy)) {
+          return {
+            x: gx * tileSize + tileSize / 2,
+            y: gy * tileSize + tileSize / 2,
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /** 获取 main_area 的中心像素坐标 */
+  getMainAreaCenterPixel(): { x: number; y: number } {
+    if (!this.worldSize) {
+      return { x: 0, y: 0 };
+    }
+    return {
+      x: this.worldSize.width / 2,
+      y: this.worldSize.height / 2,
+    };
+  }
+
+  private isTileWalkable(gx: number, gy: number): boolean {
+    if (!this.collisionData) return true;
+    if (gx < 0 || gy < 0 || gx >= this.collisionGridWidth || gy >= this.collisionGridHeight) {
+      return false;
+    }
+    return this.collisionData[gy * this.collisionGridWidth + gx] === 0;
+  }
+
+  private loadCollisionGrid(): void {
+    const worldDir = getWorldDir();
+    if (!worldDir) return;
+
+    const tmjPath = path.join(worldDir, "map", "06-final.tmj");
+    if (!fs.existsSync(tmjPath)) return;
+
+    try {
+      const raw = fs.readFileSync(tmjPath, "utf-8");
+      const tmj = JSON.parse(raw) as {
+        width?: number;
+        height?: number;
+        tilewidth?: number;
+        layers?: Array<{ name?: string; data?: unknown }>;
+      };
+      const gridWidth = Number(tmj.width);
+      const gridHeight = Number(tmj.height);
+      const collisionData = tmj.layers?.find((layer) => layer.name === "collision")?.data;
+
+      if (
+        !Number.isFinite(gridWidth) ||
+        !Number.isFinite(gridHeight) ||
+        !Array.isArray(collisionData) ||
+        collisionData.length !== gridWidth * gridHeight
+      ) {
+        return;
+      }
+
+      this.collisionData = collisionData as number[];
+      this.collisionGridWidth = gridWidth;
+      this.collisionGridHeight = gridHeight;
+
+      // Also update worldSize to match new dimensions
+      const tileSize = Number(tmj.tilewidth);
+      if (Number.isFinite(tileSize) && this.worldSize) {
+        this.worldSize = {
+          ...this.worldSize,
+          width: gridWidth * tileSize,
+          height: gridHeight * tileSize,
+          tileSize,
+          gridWidth,
+          gridHeight,
+        };
+      }
+    } catch (error) {
+      console.warn("[WorldManager] Failed to load collision grid:", error);
+    }
+  }
+
+  /**
+   * Reload map data (collision grid, world size) after map expansion.
+   * Called by MapExpander after a successful expansion job.
+   */
+  /**
+   * Reload map data (collision grid, world size, locations, main area points)
+   * after map expansion. Called by MapExpander after a successful expansion job.
+   *
+   * This performs a full reload of all world config that may have changed:
+   * 1. Invalidate cached world.json and re-read it
+   * 2. Re-normalize location configs (new regions added by expansion)
+   * 3. Rebuild main area point adjacency graph (new points + new walkable paths)
+   * 4. Reload collision grid and world size from updated TMJ
+   */
+  reloadAfterExpansion(): void {
+    console.log("[WorldManager] Reloading world data after expansion...");
+
+    // 1. Invalidate config cache so world.json is re-read from disk
+    reloadConfigs();
+
+    // 2. Re-load world config
+    const config = loadWorldConfig();
+
+    // 3. Re-normalize locations (includes new regions from expansion)
+    this.locationConfigs = normalizeLocations(
+      config.locations,
+      config.worldName ?? "main_area",
+      config.worldDescription ?? "",
+    );
+
+    // 4. Rebuild main area point adjacency (new points + new walkable paths from expanded grid)
+    this.mainAreaPoints = rebuildMainAreaPointAdjacencyFromTmj(
+      normalizeMainAreaPoints(config.mainAreaPoints),
+    );
+    this.preferredMainAreaPointIds = getLargestMainAreaPointComponent(this.mainAreaPoints);
+    this.mainAreaZoneMap = computeMainAreaZones(this.mainAreaPoints);
+
+    // 5. Reload collision grid + world size from updated TMJ
+    this.worldSize = normalizeWorldSize(config.worldSize) ?? inferWorldSizeFromWorldDir();
+    this.loadCollisionGrid();
+
+    // 6. Update world actions/metadata in case they changed
+    this.worldActions = config.worldActions ?? [];
+
+    console.log(
+      `[WorldManager] World reloaded: ${this.collisionGridWidth}x${this.collisionGridHeight} tiles, ` +
+      `${this.worldSize?.width}x${this.worldSize?.height}px, ` +
+      `${this.locationConfigs.length} locations, ${this.mainAreaPoints.length} main area points`,
+    );
   }
 
   private findObjectConfig(objectId: string): ObjectConfig | undefined {

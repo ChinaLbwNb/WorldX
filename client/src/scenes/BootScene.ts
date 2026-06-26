@@ -5,21 +5,28 @@ const MAP_TMJ_PATH = "/assets/map/06-final.tmj";
 const MAP_BACKGROUND_PATH = "/assets/map/06-background.png";
 
 export class BootScene extends Phaser.Scene {
+  private characterIds: string[] = [];
+
   constructor() {
     super("BootScene");
   }
 
-  private async fetchCharacterManifest(): Promise<string[]> {
+  async init() {
+    // Fetch character manifest BEFORE preload so that all spritesheet assets
+    // can be queued synchronously inside preload(). This avoids Phaser loader
+    // timing issues caused by await inside preload().
     try {
       const res = await fetch("/api/characters");
       const characters: { id: string }[] = await res.json();
-      return characters.map((c) => c.id);
-    } catch {
-      return [];
+      this.characterIds = characters.map((c) => c.id);
+      console.log(`[BootScene] Found ${this.characterIds.length} characters`);
+    } catch (e) {
+      console.warn("[BootScene] Failed to fetch character manifest:", e);
+      this.characterIds = [];
     }
   }
 
-  async preload() {
+  preload() {
     const w = this.cameras.main.width;
     const h = this.cameras.main.height;
 
@@ -49,11 +56,16 @@ export class BootScene extends Phaser.Scene {
       } catch (_) { /* protect the loader pipeline */ }
     });
 
+    this.load.on("loaderror", (file: { key?: string; type?: string }) => {
+      console.warn(`[BootScene] Failed to load asset: ${file.type} ${file.key}`);
+    });
+
     this.load.json("world-map", MAP_TMJ_PATH);
     this.load.image("world-base", MAP_BACKGROUND_PATH);
 
-    const charIds = await this.fetchCharacterManifest();
-    for (const charId of charIds) {
+    // Queue all character spritesheets synchronously (characterIds were
+    // already fetched in init()).
+    for (const charId of this.characterIds) {
       this.load.spritesheet(charId, `/assets/characters/${charId}/spritesheet.png`, {
         frameWidth: SPRITE_FRAME_WIDTH,
         frameHeight: SPRITE_FRAME_HEIGHT,
@@ -63,11 +75,12 @@ export class BootScene extends Phaser.Scene {
 
   create() {
     for (const key of this.textures.getTextureKeys()) {
-      if (key === "world-base" || key.startsWith("char_")) {
+      if (key === "world-base" || this.characterIds.includes(key)) {
         this.textures.get(key).setFilter(Phaser.Textures.FilterMode.LINEAR);
       }
     }
     console.log("[BootScene] Loading complete, starting WorldScene");
+    console.log(`[BootScene] Loaded ${this.characterIds.length} character spritesheets`);
     this.scene.start("WorldScene");
   }
 }

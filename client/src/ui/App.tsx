@@ -7,6 +7,7 @@ import Phaser from "phaser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TopBar } from "./panels/TopBar";
 import { SidePanel } from "./panels/SidePanel";
+import { BuildPanel } from "./panels/BuildPanel";
 import { MapControls } from "./panels/MapControls";
 import { DialoguePanel } from "./panels/DialoguePanel";
 import { SceneTransition } from "./panels/SceneTransition";
@@ -14,7 +15,7 @@ import { WorldIntroBanner } from "./panels/WorldIntroBanner";
 import { Timeline } from "./pages/Timeline";
 import { CreateWorldPage } from "./pages/CreateWorldPage";
 import { CreateWorldBackground } from "./pages/CreateWorldBackground";
-import type { SimulationEvent, DialogueEventData, WorldTimeInfo } from "../types/api";
+import type { SimulationEvent, DialogueEventData, WorldTimeInfo, BuildState } from "../types/api";
 import { apiClient } from "./services/api-client";
 import type { GeneratedWorldSummary, WorldInfo } from "./services/api-client";
 
@@ -88,6 +89,8 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
   const [showRegionBoundsOverlay, setShowRegionBoundsOverlay] = useState(false);
   const [showMainAreaPointsOverlay, setShowMainAreaPointsOverlay] = useState(false);
   const [showInteractiveObjectsOverlay, setShowInteractiveObjectsOverlay] = useState(false);
+  const [buildState, setBuildState] = useState<BuildState | null>(null);
+  const [buildPanelOpen, setBuildPanelOpen] = useState(false);
   const isOverlayRoute =
     location.pathname === "/timeline";
   const hideMainChrome = isOverlayRoute || isCreateRoute;
@@ -320,6 +323,14 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
     const onReplayFinished = () => {
       setIsReplaying(false);
     };
+    const onBuildStateUpdated = (state: BuildState) => {
+      setBuildState(state);
+    };
+    const onResourceCollected = (payload: { resources: number; gained: number; objectId: string }) => {
+      setBuildState((prev) =>
+        prev ? { ...prev, resources: payload.resources } : prev
+      );
+    };
 
     eventBus.on("time_update", onTimeUpdate);
     eventBus.on("character_clicked", onCharClick);
@@ -330,6 +341,8 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
     eventBus.on("set_replay_mode", onReplayMode);
     eventBus.on("replay_progress", onReplayProgress);
     eventBus.on("replay_finished", onReplayFinished);
+    eventBus.on("build_state_updated", onBuildStateUpdated);
+    eventBus.on("resource_collected", onResourceCollected);
 
     return () => {
       eventBus.off("time_update", onTimeUpdate);
@@ -341,6 +354,8 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
       eventBus.off("set_replay_mode", onReplayMode);
       eventBus.off("replay_progress", onReplayProgress);
       eventBus.off("replay_finished", onReplayFinished);
+      eventBus.off("build_state_updated", onBuildStateUpdated);
+      eventBus.off("resource_collected", onResourceCollected);
     };
   }, [eventBus]);
 
@@ -393,6 +408,41 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
     navigate("/");
   }, [navigate]);
 
+  const handleToggleBuildPanel = useCallback(() => {
+    setBuildPanelOpen((prev) => !prev);
+  }, []);
+
+  const handleBuildStateChange = useCallback((state: BuildState) => {
+    setBuildState(state);
+  }, []);
+
+  // Periodically refresh build state (every 2 seconds)
+  useEffect(() => {
+    if (isCreateRoute || isOverlayRoute) return;
+
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const state = await apiClient.getBuildState();
+        if (!cancelled) {
+          setBuildState(state);
+        }
+      } catch {
+        // Build system may not be available — that's fine.
+      }
+    };
+
+    // Initial load
+    void refresh();
+
+    const timer = setInterval(refresh, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isCreateRoute, isOverlayRoute]);
+
   const overlayContent =
     location.pathname === "/timeline" ? (
       <Timeline />
@@ -442,6 +492,9 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
             isReplaying={isReplaying}
             replayProgress={replayProgress}
             onHeightChange={setTopBarHeight}
+            resources={buildState?.resources ?? null}
+            onToggleBuildPanel={handleToggleBuildPanel}
+            buildPanelOpen={buildPanelOpen}
           />
           {worldInfo && (worldInfo.originalPrompt?.trim() || worldInfo.worldDescription?.trim()) && (
             <WorldIntroBanner
@@ -458,6 +511,12 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
             onSelect={setSelectedCharId}
             onToggleFollow={handleToggleFollowChar}
             events={events}
+          />
+          <BuildPanel
+            open={buildPanelOpen}
+            onClose={handleToggleBuildPanel}
+            buildState={buildState}
+            onBuildStateChange={handleBuildStateChange}
           />
           <DialoguePanel
             events={dialogueEvents.filter(

@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
 import { WorldManager } from "../core/world-manager.js";
 import { CharacterManager } from "../core/character-manager.js";
+import { CharacterBuilder } from "../core/character-builder.js";
+import { MapExpander } from "../core/map-expander.js";
+import { ResourceManager } from "../core/resource-manager.js";
+import { PlayerManager } from "../core/player-manager.js";
 import { LLMClient } from "../llm/llm-client.js";
 import { PromptBuilder } from "../llm/prompt-builder.js";
 import { SimulationEngine } from "../simulation/simulation-engine.js";
@@ -15,6 +19,10 @@ import type { InitFrameCharacter } from "./timeline-manager.js";
 export class AppContext {
   worldManager!: WorldManager;
   characterManager!: CharacterManager;
+  characterBuilder!: CharacterBuilder;
+  mapExpander!: MapExpander;
+  resourceManager!: ResourceManager;
+  playerManager!: PlayerManager;
   llmClient!: LLMClient;
   promptBuilder!: PromptBuilder;
   decisionMaker!: DecisionMaker;
@@ -161,6 +169,24 @@ export class AppContext {
 
     this.characterManager = new CharacterManager(this.worldManager);
     this.characterManager.initialize();
+
+    this.characterBuilder = new CharacterBuilder(
+      this.worldManager,
+      this.characterManager,
+      () => this.getWorldDir(),
+    );
+
+    this.resourceManager = new ResourceManager(this.worldManager);
+    this.resourceManager.initialize();
+
+    this.mapExpander = new MapExpander(
+      this.worldManager,
+      () => this.getWorldDir(),
+      this.resourceManager,
+    );
+
+    this.playerManager = new PlayerManager(this.worldManager);
+    this.playerManager.initialize();
 
     if (!this.llmClient) {
       this.llmClient = new LLMClient();

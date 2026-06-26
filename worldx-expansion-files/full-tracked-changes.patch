@@ -1,0 +1,4946 @@
+diff --git a/client/src/objects/CharacterSprite.ts b/client/src/objects/CharacterSprite.ts
+index e1bbe66..c7428dc 100644
+--- a/client/src/objects/CharacterSprite.ts
++++ b/client/src/objects/CharacterSprite.ts
+@@ -773,6 +773,64 @@ export class CharacterSprite extends Phaser.GameObjects.Container {
+     this.idleTween?.resume();
+   }
+ 
++  /**
++   * Try to switch from circle fallback to sprite body if the texture
++   * has become available (e.g. loaded asynchronously after construction).
++   * Returns true if the switch happened.
++   */
++  tryUpgradeToSprite(): boolean {
++    if (this.hasSprite) return false;
++    if (!this.scene.textures.exists(this.characterId)) return false;
++
++    console.log(`[CharacterSprite] Upgrading ${this.characterId} from circle to sprite`);
++    this.hasSprite = true;
++
++    // Recreate shadow with sprite dimensions
++    this.shadow.width = this.displayMetrics.shadowWidth;
++    this.shadow.height = this.displayMetrics.shadowHeight;
++    this.shadow.y = this.displayMetrics.shadowOffsetY;
++
++    // Destroy old circle body
++    if (this.idleTween) {
++      this.idleTween.stop();
++      this.idleTween = null;
++    }
++    if (this.walkTween) {
++      this.walkTween.stop();
++      this.walkTween = null;
++    }
++    this.bodyCircle?.destroy();
++    this.bodyCircle = null;
++
++    // Create sprite body
++    this.createSpriteBody();
++
++    // Re-add bodyContainer to the container at the correct position
++    // (it's already in this.add([...]) from createVisuals, we just
++    // need to reorder to keep shadow under the body)
++    this.bringToTop(this.bodyContainer);
++
++    // Update hit area
++    const hitW = this.displayMetrics.hitWidth;
++    const hitH = this.displayMetrics.hitHeight;
++    const hitTopY = this.displayMetrics.hitTopY;
++    this.setInteractive({
++      hitArea: new Phaser.Geom.Rectangle(-hitW / 2, hitTopY, hitW, hitH),
++      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
++      useHandCursor: true,
++    });
++
++    // Update bubble anchor
++    this.bubbleContainer.setY(this.displayMetrics.bubbleOffsetY);
++    this.osBubbleContainer.setY(this.displayMetrics.bubbleOffsetY);
++    this.updateOsBubblePosition();
++
++    // Update DOM label position
++    this.updateDomLabelPosition();
++
++    return true;
++  }
++
+   enableClick(callback: (charId: string) => void): void {
+     this.on("pointerdown", () => callback(this.characterId));
+     this.on("pointerover", () => {
+diff --git a/client/src/scenes/BootScene.ts b/client/src/scenes/BootScene.ts
+index d83d366..3a31c4e 100644
+--- a/client/src/scenes/BootScene.ts
++++ b/client/src/scenes/BootScene.ts
+@@ -5,21 +5,28 @@ const MAP_TMJ_PATH = "/assets/map/06-final.tmj";
+ const MAP_BACKGROUND_PATH = "/assets/map/06-background.png";
+ 
+ export class BootScene extends Phaser.Scene {
++  private characterIds: string[] = [];
++
+   constructor() {
+     super("BootScene");
+   }
+ 
+-  private async fetchCharacterManifest(): Promise<string[]> {
++  async init() {
++    // Fetch character manifest BEFORE preload so that all spritesheet assets
++    // can be queued synchronously inside preload(). This avoids Phaser loader
++    // timing issues caused by await inside preload().
+     try {
+       const res = await fetch("/api/characters");
+       const characters: { id: string }[] = await res.json();
+-      return characters.map((c) => c.id);
+-    } catch {
+-      return [];
++      this.characterIds = characters.map((c) => c.id);
++      console.log(`[BootScene] Found ${this.characterIds.length} characters`);
++    } catch (e) {
++      console.warn("[BootScene] Failed to fetch character manifest:", e);
++      this.characterIds = [];
+     }
+   }
+ 
+-  async preload() {
++  preload() {
+     const w = this.cameras.main.width;
+     const h = this.cameras.main.height;
+ 
+@@ -49,11 +56,16 @@ export class BootScene extends Phaser.Scene {
+       } catch (_) { /* protect the loader pipeline */ }
+     });
+ 
++    this.load.on("loaderror", (file: { key?: string; type?: string }) => {
++      console.warn(`[BootScene] Failed to load asset: ${file.type} ${file.key}`);
++    });
++
+     this.load.json("world-map", MAP_TMJ_PATH);
+     this.load.image("world-base", MAP_BACKGROUND_PATH);
+ 
+-    const charIds = await this.fetchCharacterManifest();
+-    for (const charId of charIds) {
++    // Queue all character spritesheets synchronously (characterIds were
++    // already fetched in init()).
++    for (const charId of this.characterIds) {
+       this.load.spritesheet(charId, `/assets/characters/${charId}/spritesheet.png`, {
+         frameWidth: SPRITE_FRAME_WIDTH,
+         frameHeight: SPRITE_FRAME_HEIGHT,
+@@ -63,11 +75,12 @@ export class BootScene extends Phaser.Scene {
+ 
+   create() {
+     for (const key of this.textures.getTextureKeys()) {
+-      if (key === "world-base" || key.startsWith("char_")) {
++      if (key === "world-base" || this.characterIds.includes(key)) {
+         this.textures.get(key).setFilter(Phaser.Textures.FilterMode.LINEAR);
+       }
+     }
+     console.log("[BootScene] Loading complete, starting WorldScene");
++    console.log(`[BootScene] Loaded ${this.characterIds.length} character spritesheets`);
+     this.scene.start("WorldScene");
+   }
+ }
+diff --git a/client/src/scenes/WorldScene.ts b/client/src/scenes/WorldScene.ts
+index 02c99fa..54515b3 100644
+--- a/client/src/scenes/WorldScene.ts
++++ b/client/src/scenes/WorldScene.ts
+@@ -6,9 +6,24 @@ import { CharacterMovement } from "../systems/CharacterMovement";
+ import { PlaybackController } from "../systems/PlaybackController";
+ import { CameraController } from "../systems/CameraController";
+ import { CharacterSprite } from "../objects/CharacterSprite";
+-import { getCharacterColor, actionToEmoji, createCharacterDisplayMetrics } from "../config/game-config";
++import { PlayerSprite } from "../objects/PlayerSprite";
++import { getCharacterColor, actionToEmoji, createCharacterDisplayMetrics, SPRITE_FRAME_WIDTH, SPRITE_FRAME_HEIGHT } from "../config/game-config";
+ import { apiClient } from "../ui/services/api-client";
+-import type { CharacterInfo, DialogueEventData, SimulationEvent } from "../types/api";
++import type { CharacterInfo, DialogueEventData, SimulationEvent, BuildState } from "../types/api";
++
++/** Normalized resource node with frontend-friendly field names. */
++interface ResourceNodeNormalized {
++  objectId: string;
++  name: string;
++  locationId: string;
++  x: number;
++  y: number;
++  width: number;
++  height: number;
++  resourcePerClick: number;
++  cooldownMs: number;
++  remaining: number;
++}
+ 
+ type DialoguePlaybackTurn = {
+   speaker: string;
+@@ -54,6 +69,15 @@ export class WorldScene extends Phaser.Scene {
+   private pendingPlaybackAsyncOps = 0;
+   private pendingDialogueCleanupTimers = 0;
+   private playbackCompletionCheckTimer: Phaser.Time.TimerEvent | null = null;
++  private playerSprite: PlayerSprite | null = null;
++  private buildState: BuildState | null = null;
++  private resourceNodes: Map<string, ResourceNodeNormalized> = new Map();
++  private resourceMarkers: Phaser.GameObjects.Container | null = null;
++  private collectButtonContainer: Phaser.GameObjects.Container | null = null;
++  private collectButtonBg: Phaser.GameObjects.Graphics | null = null;
++  private collectButtonText: Phaser.GameObjects.Text | null = null;
++  private nearbyResourceObjectId: string | null = null;
++  private readonly COLLECT_INTERACTION_RADIUS = 120;
+ 
+   constructor() {
+     super("WorldScene");
+@@ -215,6 +239,12 @@ export class WorldScene extends Phaser.Scene {
+       console.warn("[WorldScene] Failed to load characters:", e);
+     }
+ 
++    try {
++      await this.initPlayerAndBuild();
++    } catch (e) {
++      console.warn("[WorldScene] Failed to init player/build:", e);
++    }
++
+     try {
+       await this.playbackController.initialize();
+     } catch (e) {
+@@ -222,12 +252,470 @@ export class WorldScene extends Phaser.Scene {
+     }
+ 
+     console.log("[WorldScene] Async init complete, sprites:", this.characterSprites.size);
++
++    // Try upgrading any circle-fallback sprites to proper sprites if
++    // textures became available during async init (safety net for timing).
++    this.upgradeCharacterSprites();
++  }
++
++  /** Try upgrading all character sprites from circle fallback to sprite sheets. */
++  private upgradeCharacterSprites(): void {
++    let upgraded = 0;
++    for (const sprite of this.characterSprites.values()) {
++      if (sprite.tryUpgradeToSprite()) {
++        upgraded++;
++      }
++    }
++    if (upgraded > 0) {
++      console.log(`[WorldScene] Upgraded ${upgraded} characters to sprite mode`);
++    }
+   }
+ 
+   private async initCharacters() {
+     await this.syncCharactersFromServer();
+   }
+ 
++  private async initPlayerAndBuild() {
++    try {
++      const state = await apiClient.getBuildState();
++      this.buildState = state;
++      this.resourceNodes.clear();
++      for (const node of state.resourceNodes) {
++        // Map API fields (id, pixelX, pixelY) to frontend-friendly names
++        // (objectId, x, y) and add a remaining count for UI purposes.
++        const normalized: ResourceNodeNormalized = {
++          objectId: node.id,
++          name: node.name,
++          locationId: node.locationId,
++          x: node.pixelX - node.width / 2,
++          y: node.pixelY - node.height / 2,
++          width: node.width,
++          height: node.height,
++          resourcePerClick: node.resourcePerClick,
++          cooldownMs: node.cooldownMs,
++          remaining: 999, // unlimited conceptually, cooldown-based
++        };
++        this.resourceNodes.set(normalized.objectId, normalized);
++      }
++
++      const displayMetrics = createCharacterDisplayMetrics(this.mapPixelWidth, this.mapPixelHeight);
++      const px = state.playerState.pixelX || this.mapPixelWidth / 2;
++      const py = state.playerState.pixelY || this.mapPixelHeight / 2;
++
++      this.playerSprite = new PlayerSprite(this, px, py, { displayMetrics });
++      this.entityLayer.add(this.playerSprite);
++
++      this.setupResourceMarkers();
++      this.setupGroundClickHandler();
++      this.setupResourceInteraction();
++      this.setupCollectButton();
++
++      this.eventBus.emit("build_state_updated", state);
++    } catch (e) {
++      console.warn("[WorldScene] Build system not available:", e);
++    }
++  }
++
++  /**
++   * Create glowing visual markers on the map for each resource node.
++   * Each marker is a semi-transparent glowing ring + 💎 icon, with hover effect.
++   */
++  private setupResourceMarkers(): void {
++    if (this.resourceNodes.size === 0) return;
++
++    this.resourceMarkers = this.add.container(0, 0);
++    this.resourceMarkers.setDepth(8);
++
++    console.log(`[WorldScene] Creating ${this.resourceNodes.size} resource markers`);
++
++    for (const node of this.resourceNodes.values()) {
++      const centerX = node.x + node.width / 2;
++      const centerY = node.y + node.height / 2;
++
++      const marker = this.add.container(centerX, centerY);
++
++      // Outer glow ring (pulsing)
++      const glowRing = this.add.graphics();
++      const glowRadius = Math.max(node.width, node.height) * 0.7;
++      glowRing.lineStyle(3, 0x55efc4, 0.6);
++      glowRing.strokeCircle(0, 0, glowRadius);
++      glowRing.setAlpha(0.8);
++
++      // Inner filled circle (semi-transparent highlight
++      const innerFill = this.add.graphics();
++      innerFill.fillStyle(0x55efc4, 0.15);
++      innerFill.fillCircle(0, 0, glowRadius * 0.7);
++
++      // Diamond emoji / icon in the center
++      const icon = this.add.text(0, 0, "💎", {
++        fontSize: `${Math.min(node.width * 0.6)}px`,
++        fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
++      }).setOrigin(0.5, 0.5);
++
++      // Pulsing animation for the glow ring
++      const glowTween = this.tweens.add({
++        targets: { scale: 1 },
++        scale: 1.25,
++        duration: 1800,
++        yoyo: true,
++        repeat: -1,
++        ease: "Sine.easeInOut",
++        onUpdate: (tween) => {
++          const s = (tween.targets[0] as { scale: number }).scale;
++          glowRing.setScale(s);
++          glowRing.setAlpha(0.9 - (s - 1) * 2);
++        },
++      });
++
++      // Store references for hover state
++      marker.setData("node", node);
++      marker.setData("glowRing", glowRing);
++      marker.setData("glowTween", glowTween);
++      marker.setData("icon", icon);
++      marker.setData("innerFill", innerFill);
++
++      // Make the marker interactive (use a larger hit area for easier clicking)
++      const hitRadius = glowRadius * 1.3;
++      marker.setSize(hitRadius * 2, hitRadius * 2);
++      marker.setInteractive(
++        new Phaser.Geom.Circle(0, 0, hitRadius),
++        Phaser.Geom.Circle.Contains,
++      );
++
++      // Hover effects
++      marker.on("pointerover", () => {
++        const ring = marker.getData("glowRing") as Phaser.GameObjects.Graphics;
++        const iconEl = marker.getData("icon") as Phaser.GameObjects.Text;
++        if (ring) {
++          ring.clear();
++          ring.lineStyle(4, 0xffffff, 0.9);
++          ring.strokeCircle(0, 0, glowRadius * 1.15);
++        }
++        if (iconEl) {
++          iconEl.setScale(1.15);
++        }
++        // Show the resource name tooltip
++        this.showResourceTooltip(centerX, centerY - node.height / 2 - 10, node.name);
++      });
++
++      marker.on("pointerout", () => {
++        const ring = marker.getData("glowRing") as Phaser.GameObjects.Graphics;
++        const iconEl = marker.getData("icon") as Phaser.GameObjects.Text;
++        if (ring) {
++          ring.clear();
++          ring.lineStyle(3, 0x55efc4, 0.6);
++          ring.strokeCircle(0, 0, glowRadius);
++        }
++        if (iconEl) {
++          iconEl.setScale(1);
++        }
++        this.hideResourceTooltip();
++      });
++
++      // Click handler — move player to resource & collect
++      marker.on("pointerdown", () => {
++        this.handleResourceClick(node.objectId);
++      });
++
++      marker.add([innerFill, glowRing, icon]);
++      this.resourceMarkers.add(marker);
++    }
++
++    // Sort markers by Y for proper depth ordering
++    this.resourceMarkers.list.sort((a, b) => (a as Phaser.GameObjects.Container).y - (b as Phaser.GameObjects.Container).y);
++  }
++
++  private resourceTooltipContainer: Phaser.GameObjects.Container | null = null;
++  private resourceTooltipBg: Phaser.GameObjects.Graphics | null = null;
++  private resourceTooltipText: Phaser.GameObjects.Text | null = null;
++
++  private showResourceTooltip(x: number, y: number, text: string): void {
++    if (!this.resourceTooltipContainer) {
++      this.resourceTooltipContainer = this.add.container(0, 0);
++      this.resourceTooltipContainer.setDepth(50);
++
++      this.resourceTooltipBg = this.add.graphics();
++      this.resourceTooltipText = this.add.text(0, 0, "", {
++        fontSize: "13px",
++        fontFamily: "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
++        color: "#ffffff",
++        fontStyle: "bold",
++        stroke: "#000000",
++        strokeThickness: 2,
++      }).setOrigin(0.5, 0.5);
++
++      this.resourceTooltipContainer.add([this.resourceTooltipBg, this.resourceTooltipText]);
++    }
++
++    if (!this.resourceTooltipBg || !this.resourceTooltipText) return;
++
++    this.resourceTooltipText.setText(text);
++    const textW = this.resourceTooltipText.width;
++    const textH = this.resourceTooltipText.height;
++    const padX = 12;
++    const padY = 6;
++
++    this.resourceTooltipBg.clear();
++    this.resourceTooltipBg.fillStyle(0x000000, 0.75);
++    this.resourceTooltipBg.fillRoundedRect(
++      -textW / 2 - padX,
++      -textH / 2 - padY,
++      textW + padX * 2,
++      textH + padY * 2,
++      6,
++    );
++
++    this.resourceTooltipContainer.setPosition(x, y);
++    this.resourceTooltipContainer.setVisible(true);
++  }
++
++  private hideResourceTooltip(): void {
++    this.resourceTooltipContainer?.setVisible(false);
++  }
++
++  private setupGroundClickHandler(): void {
++    // Use the main camera's input to detect clicks on empty ground.
++    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer, currentlyOver: Phaser.GameObjects.GameObject[]) => {
++      if (!this.playerSprite) return;
++      if (this.playerSprite.isMoving) return;
++
++      // Check if we clicked on a character sprite or UI element - if so, skip ground move.
++      const clickedOnSprite = currentlyOver.some(
++        (obj) => obj instanceof CharacterSprite || obj === this.playerSprite
++      );
++      if (clickedOnSprite) return;
++
++      // Check if we clicked on an interactive object (resource node)
++      const clickedOnObject = currentlyOver.some((obj) => {
++        return obj instanceof Phaser.GameObjects.Zone;
++      });
++      if (clickedOnObject) return;
++
++      // Check if we clicked on a resource marker
++      if (this.resourceMarkers) {
++        const clickedOnMarker = currentlyOver.some((obj) => {
++          // Walk up the parent chain to see if we're inside a resource marker
++          let current: any = obj;
++          while (current) {
++            if (current === this.resourceMarkers) return true;
++            current = current.parentContainer;
++          }
++          return false;
++        });
++        if (clickedOnMarker) return;
++      }
++
++      // Get world position from pointer
++      const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
++      const targetX = Phaser.Math.Clamp(worldPoint.x, 32, this.mapPixelWidth - 32);
++      const targetY = Phaser.Math.Clamp(worldPoint.y, 32, this.mapPixelHeight - 32);
++
++      this.movePlayerTo(targetX, targetY);
++    });
++  }
++
++  private async movePlayerTo(targetX: number, targetY: number): Promise<void> {
++    if (!this.playerSprite) return;
++
++    // Optimistic: start moving locally first for responsiveness
++    this.playerSprite.moveToPosition(targetX, targetY, () => {
++      this.updateNearbyResource();
++    });
++
++    // Sync with server in the background
++    try {
++      const result = await apiClient.movePlayer(targetX, targetY);
++      if (result.ok && result.playerState) {
++        // If server returns a different position, snap to it gently
++        const serverX = result.playerState.pixelX;
++        const serverY = result.playerState.pixelY;
++        const dist = Phaser.Math.Distance.Between(
++          this.playerSprite.x,
++          this.playerSprite.y,
++          serverX,
++          serverY
++        );
++        if (dist > 10 && !this.playerSprite.isMoving) {
++          this.playerSprite.moveToPosition(serverX, serverY);
++        }
++      }
++    } catch (e) {
++      console.warn("[WorldScene] Failed to sync player move:", e);
++    }
++  }
++
++  private setupResourceInteraction(): void {
++    // Add click handlers for resource nodes via the interactive object zones
++    for (const object of this.mapManager.getInteractiveObjects()) {
++      const node = this.resourceNodes.get(object.objectId);
++      if (!node) continue;
++
++      // Find the existing zone and add a click handler
++      const zones = this.children.getAll().filter(
++        (child) =>
++          child instanceof Phaser.GameObjects.Zone &&
++          child.x === object.x &&
++          child.y === object.y
++      );
++
++      for (const zone of zones) {
++        (zone as Phaser.GameObjects.Zone).on("pointerdown", () => {
++          this.handleResourceClick(node.objectId);
++        });
++      }
++    }
++  }
++
++  private handleResourceClick(objectId: string): void {
++    if (!this.playerSprite) return;
++    const node = this.resourceNodes.get(objectId);
++    if (!node) return;
++
++    // Calculate the interaction position (in front of the object)
++    const targetX = node.x + node.width / 2;
++    const targetY = node.y + node.height + 20;
++
++    const dist = Phaser.Math.Distance.Between(
++      this.playerSprite.x,
++      this.playerSprite.y,
++      targetX,
++      targetY
++    );
++
++    if (dist <= this.COLLECT_INTERACTION_RADIUS) {
++      // Player is already nearby, show collect button
++      this.showCollectButton(objectId);
++    } else {
++      // Move player to the resource first
++      this.movePlayerTo(targetX, targetY);
++    }
++  }
++
++  private setupCollectButton(): void {
++    this.collectButtonContainer = this.add.container(0, 0);
++    this.collectButtonContainer.setDepth(30);
++    this.collectButtonContainer.setVisible(false);
++
++    this.collectButtonBg = this.add.graphics();
++    this.collectButtonText = this.add
++      .text(0, 0, "采集", {
++        fontSize: "14px",
++        fontFamily: "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
++        color: "#ffffff",
++        fontStyle: "bold",
++      })
++      .setOrigin(0.5, 0.5);
++
++    this.collectButtonContainer.add([this.collectButtonBg, this.collectButtonText]);
++
++    // Make button interactive
++    this.collectButtonContainer.setSize(80, 32);
++    this.collectButtonContainer.setInteractive(
++      new Phaser.Geom.Rectangle(-40, -16, 80, 32),
++      Phaser.Geom.Rectangle.Contains
++    );
++    this.collectButtonContainer.on("pointerdown", () => {
++      if (this.nearbyResourceObjectId) {
++        this.collectResource(this.nearbyResourceObjectId);
++      }
++    });
++    this.collectButtonContainer.on("pointerover", () => {
++      this.collectButtonText?.setStyle({ color: "#a3f7bf" });
++    });
++    this.collectButtonContainer.on("pointerout", () => {
++      this.collectButtonText?.setStyle({ color: "#ffffff" });
++    });
++  }
++
++  private showCollectButton(objectId: string): void {
++    if (!this.collectButtonContainer || !this.collectButtonBg || !this.collectButtonText) return;
++
++    const node = this.resourceNodes.get(objectId);
++    if (!node) return;
++
++    this.nearbyResourceObjectId = objectId;
++
++    const btnW = 80;
++    const btnH = 32;
++    this.collectButtonBg.clear();
++    this.collectButtonBg.fillStyle(0x00b894, 0.9);
++    this.collectButtonBg.fillRoundedRect(-btnW / 2, -btnH / 2, btnW, btnH, 8);
++    this.collectButtonBg.lineStyle(2, 0xffffff, 0.3);
++    this.collectButtonBg.strokeRoundedRect(-btnW / 2, -btnH / 2, btnW, btnH, 8);
++
++    const btnX = node.x + node.width / 2;
++    const btnY = node.y - 20;
++    this.collectButtonContainer.setPosition(btnX, btnY);
++    this.collectButtonContainer.setVisible(true);
++  }
++
++  private hideCollectButton(): void {
++    this.collectButtonContainer?.setVisible(false);
++    this.nearbyResourceObjectId = null;
++  }
++
++  private updateNearbyResource(): void {
++    if (!this.playerSprite) return;
++
++    let nearestNode: ResourceNodeNormalized | null = null;
++    let nearestDist = Infinity;
++
++    for (const node of this.resourceNodes.values()) {
++      const nodeCenterX = node.x + node.width / 2;
++      const nodeCenterY = node.y + node.height / 2;
++      const dist = Phaser.Math.Distance.Between(
++        this.playerSprite.x,
++        this.playerSprite.y,
++        nodeCenterX,
++        nodeCenterY
++      );
++      if (dist < nearestDist) {
++        nearestDist = dist;
++        nearestNode = node;
++      }
++    }
++
++    if (nearestNode && nearestDist <= this.COLLECT_INTERACTION_RADIUS && nearestNode.remaining > 0) {
++      this.showCollectButton(nearestNode.objectId);
++    } else {
++      this.hideCollectButton();
++    }
++  }
++
++  private async collectResource(objectId: string): Promise<void> {
++    try {
++      const result = await apiClient.collectResource(objectId);
++      if (result.success) {
++        // Update local resource node
++        const node = this.resourceNodes.get(objectId);
++        if (node) {
++          // Decrement remaining count
++          node.remaining = Math.max(0, node.remaining - 1);
++        }
++
++        // Update build state with new resources
++        if (this.buildState) {
++          this.buildState.resources = result.resources;
++        }
++
++        this.eventBus.emit("resource_collected", {
++          objectId,
++          gained: result.amount,
++          resources: result.resources,
++        });
++
++        this.eventBus.emit("build_state_updated", this.buildState);
++
++        // Hide button if depleted
++        if (node && node.remaining <= 0) {
++          this.hideCollectButton();
++        }
++      }
++    } catch (e) {
++      console.warn("[WorldScene] Failed to collect resource:", e);
++    }
++  }
++
+   private handleReplayInit(initFrame: { characters: { id: string; name: string; location: string; mainAreaPointId: string | null }[] }) {
+     const displayMetrics = createCharacterDisplayMetrics(this.mapPixelWidth, this.mapPixelHeight);
+     const zoom = this.cameras.main.zoom;
+@@ -286,6 +774,14 @@ export class WorldScene extends Phaser.Scene {
+       mainAreaOccupants.set(char.mainAreaPointId, occupants);
+     }
+ 
++    // Preload all character spritesheets dynamically (no dependency on BootScene timing)
++    const charsToLoad = characters.filter((c) => !this.textures.exists(c.id));
++    if (charsToLoad.length > 0) {
++      console.log(`[WorldScene] Loading ${charsToLoad.length} character spritesheets...`);
++      await this.loadCharacterSpritesheets(charsToLoad.map((c) => c.id));
++      console.log(`[WorldScene] Character spritesheets loaded`);
++    }
++
+     for (const [index, char] of characters.entries()) {
+       seenCharacterIds.add(char.id);
+       const pos = this.getCharacterPlacement(char, mainAreaOccupants);
+@@ -302,6 +798,9 @@ export class WorldScene extends Phaser.Scene {
+         sprite.enableClick((id) => this.eventBus.emit("character_clicked", id));
+         this.entityLayer.add(sprite);
+         this.characterSprites.set(char.id, sprite);
++      } else {
++        // Try upgrading from circle fallback if sprite is now available
++        sprite.tryUpgradeToSprite();
+       }
+ 
+       this.applyCharacterSnapshotToSprite(sprite, char, pos, zoom);
+@@ -314,6 +813,42 @@ export class WorldScene extends Phaser.Scene {
+     }
+   }
+ 
++  /** Dynamically load character spritesheets via Phaser Loader. */
++  private loadCharacterSpritesheets(charIds: string[]): Promise<void> {
++    return new Promise((resolve) => {
++      let remaining = charIds.length;
++      if (remaining === 0) {
++        resolve();
++        return;
++      }
++
++      for (const charId of charIds) {
++        this.load.spritesheet(charId, `/assets/characters/${charId}/spritesheet.png`, {
++          frameWidth: SPRITE_FRAME_WIDTH,
++          frameHeight: SPRITE_FRAME_HEIGHT,
++        });
++      }
++
++      this.load.once("complete", () => {
++        // Apply LINEAR filter to all loaded character textures
++        for (const charId of charIds) {
++          if (this.textures.exists(charId)) {
++            this.textures.get(charId).setFilter(Phaser.Textures.FilterMode.LINEAR);
++          }
++        }
++        resolve();
++      });
++
++      this.load.once("loaderror", () => {
++        // Even if some fail, continue
++        remaining--;
++        if (remaining <= 0) resolve();
++      });
++
++      this.load.start();
++    });
++  }
++
+   private getCharacterPlacement(
+     char: CharacterInfo,
+     mainAreaOccupants: Map<string, string[]>,
+@@ -913,10 +1448,19 @@ export class WorldScene extends Phaser.Scene {
+     for (const sprite of this.characterSprites.values()) {
+       sprite.syncOverlayZoom(zoom);
+     }
++    this.playerSprite?.syncOverlayZoom(zoom);
+     if (this.entityLayer) {
+       this.entityLayer.list.sort((a, b) => {
+-        const ay = a instanceof CharacterSprite ? a.getSortFootY() : (a as Phaser.GameObjects.Sprite).y || 0;
+-        const by = b instanceof CharacterSprite ? b.getSortFootY() : (b as Phaser.GameObjects.Sprite).y || 0;
++        const ay = a instanceof CharacterSprite
++          ? a.getSortFootY()
++          : a instanceof PlayerSprite
++          ? a.getSortFootY()
++          : (a as Phaser.GameObjects.Sprite).y || 0;
++        const by = b instanceof CharacterSprite
++          ? b.getSortFootY()
++          : b instanceof PlayerSprite
++          ? b.getSortFootY()
++          : (b as Phaser.GameObjects.Sprite).y || 0;
+         return ay - by;
+       });
+     }
+diff --git a/client/src/types/api.ts b/client/src/types/api.ts
+index cc56c01..a08a48a 100644
+--- a/client/src/types/api.ts
++++ b/client/src/types/api.ts
+@@ -171,3 +171,47 @@ export interface TimelineTickFrame {
+ }
+ 
+ export type TimelineFrame = TimelineInitFrame | TimelineTickFrame;
++
++// --- Build System Types ---
++
++export interface BuildResourceNode {
++  id: string;
++  name: string;
++  locationId: string;
++  pixelX: number;
++  pixelY: number;
++  width: number;
++  height: number;
++  resourcePerClick: number;
++  cooldownMs: number;
++}
++
++export interface BuildPlayerState {
++  id: string;
++  name: string;
++  pixelX: number;
++  pixelY: number;
++  resources: number;
++  isMoving: boolean;
++}
++
++export interface BuildCosts {
++  character: number;
++  mapExpand: number;
++}
++
++export interface BuildState {
++  resources: number;
++  playerState: BuildPlayerState;
++  costs: BuildCosts;
++  resourceNodes: BuildResourceNode[];
++}
++
++export interface BuildJobStatus {
++  jobId: string;
++  status: "pending" | "running" | "done" | "error";
++  progress: number;
++  total: number;
++  error?: string;
++  result?: unknown;
++}
+diff --git a/client/src/ui/App.tsx b/client/src/ui/App.tsx
+index ee678b0..10417b3 100644
+--- a/client/src/ui/App.tsx
++++ b/client/src/ui/App.tsx
+@@ -7,6 +7,7 @@ import Phaser from "phaser";
+ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+ import { TopBar } from "./panels/TopBar";
+ import { SidePanel } from "./panels/SidePanel";
++import { BuildPanel } from "./panels/BuildPanel";
+ import { MapControls } from "./panels/MapControls";
+ import { DialoguePanel } from "./panels/DialoguePanel";
+ import { SceneTransition } from "./panels/SceneTransition";
+@@ -14,7 +15,7 @@ import { WorldIntroBanner } from "./panels/WorldIntroBanner";
+ import { Timeline } from "./pages/Timeline";
+ import { CreateWorldPage } from "./pages/CreateWorldPage";
+ import { CreateWorldBackground } from "./pages/CreateWorldBackground";
+-import type { SimulationEvent, DialogueEventData, WorldTimeInfo } from "../types/api";
++import type { SimulationEvent, DialogueEventData, WorldTimeInfo, BuildState } from "../types/api";
+ import { apiClient } from "./services/api-client";
+ import type { GeneratedWorldSummary, WorldInfo } from "./services/api-client";
+ 
+@@ -88,6 +89,8 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
+   const [showRegionBoundsOverlay, setShowRegionBoundsOverlay] = useState(false);
+   const [showMainAreaPointsOverlay, setShowMainAreaPointsOverlay] = useState(false);
+   const [showInteractiveObjectsOverlay, setShowInteractiveObjectsOverlay] = useState(false);
++  const [buildState, setBuildState] = useState<BuildState | null>(null);
++  const [buildPanelOpen, setBuildPanelOpen] = useState(false);
+   const isOverlayRoute =
+     location.pathname === "/timeline";
+   const hideMainChrome = isOverlayRoute || isCreateRoute;
+@@ -320,6 +323,14 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
+     const onReplayFinished = () => {
+       setIsReplaying(false);
+     };
++    const onBuildStateUpdated = (state: BuildState) => {
++      setBuildState(state);
++    };
++    const onResourceCollected = (payload: { resources: number; gained: number; objectId: string }) => {
++      setBuildState((prev) =>
++        prev ? { ...prev, resources: payload.resources } : prev
++      );
++    };
+ 
+     eventBus.on("time_update", onTimeUpdate);
+     eventBus.on("character_clicked", onCharClick);
+@@ -330,6 +341,8 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
+     eventBus.on("set_replay_mode", onReplayMode);
+     eventBus.on("replay_progress", onReplayProgress);
+     eventBus.on("replay_finished", onReplayFinished);
++    eventBus.on("build_state_updated", onBuildStateUpdated);
++    eventBus.on("resource_collected", onResourceCollected);
+ 
+     return () => {
+       eventBus.off("time_update", onTimeUpdate);
+@@ -341,6 +354,8 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
+       eventBus.off("set_replay_mode", onReplayMode);
+       eventBus.off("replay_progress", onReplayProgress);
+       eventBus.off("replay_finished", onReplayFinished);
++      eventBus.off("build_state_updated", onBuildStateUpdated);
++      eventBus.off("resource_collected", onResourceCollected);
+     };
+   }, [eventBus]);
+ 
+@@ -393,6 +408,41 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
+     navigate("/");
+   }, [navigate]);
+ 
++  const handleToggleBuildPanel = useCallback(() => {
++    setBuildPanelOpen((prev) => !prev);
++  }, []);
++
++  const handleBuildStateChange = useCallback((state: BuildState) => {
++    setBuildState(state);
++  }, []);
++
++  // Periodically refresh build state (every 2 seconds)
++  useEffect(() => {
++    if (isCreateRoute || isOverlayRoute) return;
++
++    let cancelled = false;
++
++    const refresh = async () => {
++      try {
++        const state = await apiClient.getBuildState();
++        if (!cancelled) {
++          setBuildState(state);
++        }
++      } catch {
++        // Build system may not be available — that's fine.
++      }
++    };
++
++    // Initial load
++    void refresh();
++
++    const timer = setInterval(refresh, 2000);
++    return () => {
++      cancelled = true;
++      clearInterval(timer);
++    };
++  }, [isCreateRoute, isOverlayRoute]);
++
+   const overlayContent =
+     location.pathname === "/timeline" ? (
+       <Timeline />
+@@ -442,6 +492,9 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
+             isReplaying={isReplaying}
+             replayProgress={replayProgress}
+             onHeightChange={setTopBarHeight}
++            resources={buildState?.resources ?? null}
++            onToggleBuildPanel={handleToggleBuildPanel}
++            buildPanelOpen={buildPanelOpen}
+           />
+           {worldInfo && (worldInfo.originalPrompt?.trim() || worldInfo.worldDescription?.trim()) && (
+             <WorldIntroBanner
+@@ -459,6 +512,12 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
+             onToggleFollow={handleToggleFollowChar}
+             events={events}
+           />
++          <BuildPanel
++            open={buildPanelOpen}
++            onClose={handleToggleBuildPanel}
++            buildState={buildState}
++            onBuildStateChange={handleBuildStateChange}
++          />
+           <DialoguePanel
+             events={dialogueEvents.filter(
+               (e) => {
+diff --git a/client/src/ui/panels/BuildPanel.tsx b/client/src/ui/panels/BuildPanel.tsx
+new file mode 100644
+index 0000000..6a002ab
+--- /dev/null
++++ b/client/src/ui/panels/BuildPanel.tsx
+@@ -0,0 +1,565 @@
++import { useEffect, useState, useRef } from "react";
++import type { CSSProperties } from "react";
++import { apiClient } from "../services/api-client";
++import type { BuildState, BuildCosts, BuildJobStatus } from "../../types/api";
++
++type TabKey = "character" | "map";
++type MapDirection = "north" | "south" | "east" | "west";
++
++const RESOURCE_ICONS: Record<string, string> = {
++  wood: "🪵",
++  stone: "🪨",
++  iron: "⚙️",
++  food: "🍞",
++  gold: "💰",
++  crystal: "💎",
++  fiber: "🧵",
++  herb: "🌿",
++};
++
++const DIRECTION_LABELS: Record<MapDirection, { label: string; icon: string; dirLabel: string }> = {
++  north: { label: "向北扩展", icon: "⬆️", dirLabel: "北" },
++  south: { label: "向南扩展", icon: "⬇️", dirLabel: "南" },
++  east: { label: "向东扩展", icon: "➡️", dirLabel: "东" },
++  west: { label: "向西扩展", icon: "⬅️", dirLabel: "西" },
++};
++
++export function BuildPanel({
++  open,
++  onClose,
++  buildState,
++  onBuildStateChange,
++}: {
++  open: boolean;
++  onClose: () => void;
++  buildState: BuildState | null;
++  onBuildStateChange?: (state: BuildState) => void;
++}) {
++  const [tab, setTab] = useState<TabKey>("character");
++  const [characterPrompt, setCharacterPrompt] = useState("");
++  const [characterJob, setCharacterJob] = useState<BuildJobStatus | null>(null);
++  const [mapJob, setMapJob] = useState<BuildJobStatus | null>(null);
++  const [flash, setFlash] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
++  const [busy, setBusy] = useState(false);
++  const pollTimerRef = useRef<number | null>(null);
++
++  const resources = buildState?.resources ?? 0;
++  const costs: BuildCosts = buildState?.costs ?? { character: 20, mapExpand: 50 };
++
++  const isCharacterJobRunning =
++    characterJob?.status === "running" || characterJob?.status === "pending";
++  const isMapJobRunning =
++    mapJob?.status === "running" || mapJob?.status === "pending";
++
++  const showFlash = (kind: "ok" | "err", text: string) => {
++    setFlash({ kind, text });
++    setTimeout(() => setFlash(null), 3000);
++  };
++
++  const canAffordCharacter = resources >= costs.character;
++  const canAffordMapExpand = resources >= costs.mapExpand;
++
++  const formatCost = (cost: number): string => {
++    return `💎 ${cost}`;
++  };
++
++  // Poll job status for character build
++  useEffect(() => {
++    if (!characterJob || characterJob.status === "done" || characterJob.status === "error") {
++      return;
++    }
++
++    const poll = async () => {
++      try {
++        const status = await apiClient.getCharacterBuildJob(characterJob.jobId);
++        setCharacterJob(status);
++        if (status.status === "done") {
++          showFlash("ok", "角色生成完成！");
++          try {
++            const fresh = await apiClient.getBuildState();
++            onBuildStateChange?.(fresh);
++          } catch { /* ignore */ }
++        } else if (status.status === "error") {
++          showFlash("err", "生成失败: " + (status.error || "未知错误"));
++        }
++      } catch (err) {
++        console.warn("[BuildPanel] Failed to poll character job:", err);
++      }
++    };
++
++    pollTimerRef.current = window.setInterval(poll, 2000);
++    return () => {
++      if (pollTimerRef.current) {
++        clearInterval(pollTimerRef.current);
++      }
++    };
++  }, [characterJob?.jobId, characterJob?.status, onBuildStateChange]);
++
++  // Poll job status for map expand
++  useEffect(() => {
++    if (!mapJob || mapJob.status === "done" || mapJob.status === "error") {
++      return;
++    }
++
++    const poll = async () => {
++      try {
++        const status = await apiClient.getMapExpandJob(mapJob.jobId);
++        setMapJob(status);
++        if (status.status === "done") {
++          showFlash("ok", "地图扩展完成！即将刷新页面加载新地图...");
++          try {
++            const fresh = await apiClient.getBuildState();
++            onBuildStateChange?.(fresh);
++          } catch { /* ignore */ }
++          // Give user time to read the flash, then reload to load new map assets
++          setTimeout(() => {
++            window.location.reload();
++          }, 2000);
++        } else if (status.status === "error") {
++          showFlash("err", "扩展失败: " + (status.error || "未知错误"));
++        }
++      } catch (err) {
++        console.warn("[BuildPanel] Failed to poll map job:", err);
++      }
++    };
++
++    const timer = window.setInterval(poll, 2000);
++    return () => clearInterval(timer);
++  }, [mapJob?.jobId, mapJob?.status, onBuildStateChange]);
++
++  const handleBuildCharacter = async () => {
++    if (busy) return;
++    const trimmed = characterPrompt.trim();
++    if (!trimmed) {
++      showFlash("err", "请输入角色描述");
++      return;
++    }
++    if (!canAffordCharacter) {
++      showFlash("err", "资源不足");
++      return;
++    }
++    setBusy(true);
++    try {
++      const result = await apiClient.buildCharacter(trimmed);
++      if (result.ok) {
++        setCharacterJob({
++          jobId: result.jobId,
++          status: "pending",
++          progress: 0,
++          total: 100,
++        });
++        showFlash("ok", "开始生成角色...");
++        setCharacterPrompt("");
++      }
++    } catch (err) {
++      showFlash("err", err instanceof Error ? err.message : String(err));
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const handleExpandMap = async (direction: MapDirection) => {
++    if (busy) return;
++    if (!canAffordMapExpand) {
++      showFlash("err", "资源不足");
++      return;
++    }
++    setBusy(true);
++    try {
++      const result = await apiClient.expandMap(direction);
++      if (result.ok) {
++        setMapJob({
++          jobId: result.jobId,
++          status: "pending",
++          progress: 0,
++          total: 100,
++        });
++        showFlash("ok", "开始" + DIRECTION_LABELS[direction].label + "...");
++      }
++    } catch (err) {
++      showFlash("err", err instanceof Error ? err.message : String(err));
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const characterProgress = characterJob
++    ? characterJob.total > 0
++      ? (characterJob.progress / characterJob.total) * 100
++      : 0
++    : 0;
++
++  const mapProgress = mapJob
++    ? mapJob.total > 0
++      ? (mapJob.progress / mapJob.total) * 100
++      : 0
++    : 0;
++
++  if (!open) return null;
++
++  const characterBtnDisabled = busy || !canAffordCharacter || isCharacterJobRunning;
++  const mapBtnDisabled = busy || !canAffordMapExpand || isMapJobRunning;
++
++  const characterBtnText = isCharacterJobRunning
++    ? "生成中..."
++    : busy
++    ? "提交中..."
++    : "生成角色";
++
++  return (
++    <div style={panelStyle}>
++      <button onClick={onClose} style={toggleBtnStyle} title="收起建造面板">
++        ▸
++      </button>
++
++      <div style={panelBodyStyle(open)}>
++        {/* Header */}
++        <div style={headerStyle}>
++          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
++            <span style={{ fontSize: 16 }}>🏗️</span>
++            <span style={{ fontWeight: 700, fontSize: 14 }}>建造面板</span>
++          </div>
++          <button onClick={onClose} style={closeBtnStyle}>×</button>
++        </div>
++
++        {/* Tabs */}
++        <div style={tabsStyle}>
++          {(["character", "map"] as TabKey[]).map((key) => (
++            <button
++              key={key}
++              onClick={() => setTab(key)}
++              style={tabBtnStyle(tab === key)}
++            >
++              {key === "character" ? "生成角色" : "扩展地图"}
++            </button>
++          ))}
++        </div>
++
++        {/* Body */}
++        <div style={bodyStyle}>
++          {tab === "character" && (
++            <div style={sectionStyle}>
++              <label style={labelStyle}>角色描述</label>
++              <textarea
++                value={characterPrompt}
++                onChange={(e) => setCharacterPrompt(e.target.value)}
++                placeholder="描述你想要生成的角色，例如：一个年轻的铁匠，性格开朗，擅长制作武器"
++                rows={3}
++                style={textareaStyle}
++                disabled={busy || isCharacterJobRunning}
++              />
++              <div style={costRowStyle}>
++                <span style={{ fontSize: 11, opacity: 0.7 }}>消耗：</span>
++                <span style={{ fontSize: 12 }}>
++                  {formatCost(costs.character)}
++                </span>
++              </div>
++              <button
++                onClick={handleBuildCharacter}
++                disabled={characterBtnDisabled}
++                style={primaryBtnStyle(characterBtnDisabled)}
++              >
++                {characterBtnText}
++              </button>
++
++              {/* Character build progress */}
++              {characterJob && characterJob.status !== "done" && characterJob.status !== "error" && (
++                <div style={progressContainerStyle}>
++                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
++                    <span style={{ fontSize: 11, opacity: 0.7 }}>生成进度</span>
++                    <span style={{ fontSize: 11, opacity: 0.7 }}>
++                      {characterJob.progress}/{characterJob.total}
++                    </span>
++                  </div>
++                  <div style={progressBarBgStyle}>
++                    <div style={{ ...progressBarFillStyle, width: characterProgress + "%" }} />
++                  </div>
++                </div>
++              )}
++            </div>
++          )}
++
++          {tab === "map" && (
++            <div style={sectionStyle}>
++              <label style={labelStyle}>扩展方向</label>
++              <div style={directionGridStyle}>
++                <div />
++                <DirectionButton direction="north" onClick={() => handleExpandMap("north")} disabled={busy || isMapJobRunning} />
++                <div />
++                <DirectionButton direction="west" onClick={() => handleExpandMap("west")} disabled={busy || isMapJobRunning} />
++                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>🗺️</div>
++                <DirectionButton direction="east" onClick={() => handleExpandMap("east")} disabled={busy || isMapJobRunning} />
++                <div />
++                <DirectionButton direction="south" onClick={() => handleExpandMap("south")} disabled={busy || isMapJobRunning} />
++                <div />
++              </div>
++              <div style={costRowStyle}>
++                <span style={{ fontSize: 11, opacity: 0.7 }}>每次扩展消耗：</span>
++                <span style={{ fontSize: 12 }}>
++                  {formatCost(costs.mapExpand)}
++                </span>
++              </div>
++
++              {/* Map expand progress */}
++              {mapJob && mapJob.status !== "done" && mapJob.status !== "error" && (
++                <div style={progressContainerStyle}>
++                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
++                    <span style={{ fontSize: 11, opacity: 0.7 }}>扩展进度</span>
++                    <span style={{ fontSize: 11, opacity: 0.7 }}>
++                      {mapJob.progress}/{mapJob.total}
++                    </span>
++                  </div>
++                  <div style={progressBarBgStyle}>
++                    <div style={{ ...progressBarFillStyle, width: mapProgress + "%" }} />
++                  </div>
++                </div>
++              )}
++            </div>
++          )}
++        </div>
++
++        {/* Flash message */}
++        {flash && (
++          <div
++            style={{
++              ...flashStyle,
++              background: flash.kind === "ok" ? "rgba(0,184,148,0.18)" : "rgba(231,76,60,0.22)",
++              color: flash.kind === "ok" ? "#8df3cf" : "#ffb0b0",
++              border: flash.kind === "ok"
++                ? "1px solid rgba(0,184,148,0.45)"
++                : "1px solid rgba(231,76,60,0.45)",
++            }}
++          >
++            {flash.text}
++          </div>
++        )}
++      </div>
++    </div>
++  );
++}
++
++function DirectionButton({
++  direction,
++  onClick,
++  disabled,
++}: {
++  direction: MapDirection;
++  onClick: () => void;
++  disabled: boolean;
++}) {
++  const info = DIRECTION_LABELS[direction];
++  return (
++    <button onClick={onClick} disabled={disabled} style={directionBtnStyle(disabled)}>
++      {info.icon}
++      <div style={{ fontSize: 10, marginTop: 2 }}>{info.dirLabel}</div>
++    </button>
++  );
++}
++
++// --- Styles ---
++
++const panelStyle: CSSProperties = {
++  position: "fixed",
++  top: "var(--top-ui-offset, 52px)",
++  right: 0,
++  width: 340,
++  height: "calc(100vh - var(--top-ui-offset, 52px))",
++  background: "linear-gradient(180deg, rgba(20,20,40,0.95), rgba(20,20,40,0.9))",
++  backdropFilter: "blur(8px)",
++  display: "flex",
++  flexDirection: "column",
++  zIndex: 90,
++  pointerEvents: "auto",
++  borderLeft: "1px solid rgba(255,255,255,0.08)",
++  boxShadow: "-4px 0 16px rgba(0,0,0,0.3)",
++};
++
++function panelBodyStyle(open: boolean): CSSProperties {
++  return {
++    flex: 1,
++    overflow: "hidden",
++    display: "flex",
++    flexDirection: "column",
++    opacity: open ? 1 : 0,
++    transition: "opacity 0.2s",
++  };
++}
++
++const toggleBtnStyle: CSSProperties = {
++  position: "absolute",
++  left: 0,
++  top: 16,
++  width: 36,
++  height: 48,
++  background: "linear-gradient(90deg, rgba(26,26,46,0.95), rgba(30,30,50,0.8))",
++  border: "1px solid rgba(255,255,255,0.15)",
++  borderRight: "none",
++  borderRadius: "8px 0 0 8px",
++  color: "#e0e0e0",
++  cursor: "pointer",
++  fontSize: 18,
++  transform: "translateX(-100%)",
++  zIndex: 91,
++  display: "flex",
++  alignItems: "center",
++  justifyContent: "center",
++  boxShadow: "-2px 0 8px rgba(0,0,0,0.3)",
++  transition: "background 0.2s, color 0.2s",
++};
++
++const headerStyle: CSSProperties = {
++  padding: "12px 16px",
++  borderBottom: "1px solid rgba(255,255,255,0.08)",
++  display: "flex",
++  alignItems: "center",
++  justifyContent: "space-between",
++  gap: 10,
++  color: "#e0e0e0",
++  flexShrink: 0,
++};
++
++const closeBtnStyle: CSSProperties = {
++  background: "transparent",
++  border: "none",
++  color: "#e0e0e0",
++  fontSize: 22,
++  cursor: "pointer",
++  lineHeight: 1,
++  padding: 0,
++  width: 28,
++  height: 28,
++  opacity: 0.7,
++};
++
++const tabsStyle: CSSProperties = {
++  display: "flex",
++  gap: 6,
++  padding: "10px 14px",
++  borderBottom: "1px solid rgba(255,255,255,0.06)",
++  flexShrink: 0,
++};
++
++const bodyStyle: CSSProperties = {
++  padding: 14,
++  overflowY: "auto",
++  flex: 1,
++  color: "#e0e0e0",
++};
++
++const sectionStyle: CSSProperties = {
++  display: "flex",
++  flexDirection: "column",
++  gap: 10,
++};
++
++const labelStyle: CSSProperties = {
++  fontSize: 11,
++  opacity: 0.75,
++  letterSpacing: 0.2,
++};
++
++const textareaStyle: CSSProperties = {
++  background: "rgba(255,255,255,0.04)",
++  border: "1px solid rgba(255,255,255,0.12)",
++  borderRadius: 8,
++  color: "#e8e8ea",
++  padding: "8px 10px",
++  fontSize: 13,
++  resize: "vertical",
++  fontFamily: "inherit",
++};
++
++const costRowStyle: CSSProperties = {
++  display: "flex",
++  alignItems: "center",
++  gap: 6,
++  color: "#e0e0e0",
++};
++
++const directionGridStyle: CSSProperties = {
++  display: "grid",
++  gridTemplateColumns: "1fr 1fr 1fr",
++  gap: 8,
++  marginBottom: 4,
++};
++
++function directionBtnStyle(disabled: boolean): CSSProperties {
++  return {
++    background: disabled ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.08)",
++    border: disabled
++      ? "1px solid rgba(255,255,255,0.08)"
++      : "1px solid rgba(255,255,255,0.15)",
++    borderRadius: 8,
++    color: disabled ? "#666" : "#e0e0e0",
++    cursor: disabled ? "not-allowed" : "pointer",
++    padding: "10px 8px",
++    fontSize: 18,
++    display: "flex",
++    flexDirection: "column",
++    alignItems: "center",
++    transition: "all 0.15s",
++    opacity: disabled ? 0.5 : 1,
++  };
++}
++
++function primaryBtnStyle(disabled: boolean): CSSProperties {
++  return {
++    background: disabled ? "rgba(116,185,255,0.1)" : "rgba(0,184,148,0.22)",
++    border: disabled
++      ? "1px solid rgba(116,185,255,0.3)"
++      : "1px solid rgba(0,184,148,0.5)",
++    color: disabled ? "#888" : "#a3f7bf",
++    borderRadius: 8,
++    padding: "8px 16px",
++    fontSize: 13,
++    fontWeight: 600,
++    cursor: disabled ? "wait" : "pointer",
++    alignSelf: "flex-start",
++    transition: "all 0.2s",
++  };
++}
++
++const progressContainerStyle: CSSProperties = {
++  marginTop: 8,
++  padding: "8px 10px",
++  background: "rgba(255,255,255,0.04)",
++  borderRadius: 8,
++  border: "1px solid rgba(255,255,255,0.08)",
++};
++
++const progressBarBgStyle: CSSProperties = {
++  height: 6,
++  background: "rgba(255,255,255,0.08)",
++  borderRadius: 3,
++  overflow: "hidden",
++};
++
++const progressBarFillStyle: CSSProperties = {
++  height: "100%",
++  background: "linear-gradient(90deg, #00b894, #55efc4)",
++  borderRadius: 3,
++  transition: "width 0.3s ease",
++};
++
++const flashStyle: CSSProperties = {
++  margin: "0 14px 14px",
++  padding: "8px 12px",
++  borderRadius: 8,
++  fontSize: 12,
++  flexShrink: 0,
++};
++
++function tabBtnStyle(active: boolean): CSSProperties {
++  return {
++    background: active ? "rgba(0,184,148,0.18)" : "rgba(255,255,255,0.04)",
++    border: active
++      ? "1px solid rgba(0,184,148,0.45)"
++      : "1px solid rgba(255,255,255,0.1)",
++    color: active ? "#a3f7bf" : "#e0e0e0",
++    borderRadius: 999,
++    padding: "4px 12px",
++    fontSize: 12,
++    cursor: "pointer",
++    transition: "all 0.2s",
++  };
++}
+diff --git a/client/src/ui/panels/TopBar.tsx b/client/src/ui/panels/TopBar.tsx
+index 7c042e1..6fbde1f 100644
+--- a/client/src/ui/panels/TopBar.tsx
++++ b/client/src/ui/panels/TopBar.tsx
+@@ -13,6 +13,17 @@ import { LanguageToggle } from "../components/LanguageToggle";
+ import { translatePeriod } from "../utils/time-i18n";
+ import { sortLibraryWorldsForLocale } from "../utils/library-world-sort";
+ 
++const RESOURCE_ICONS: Record<string, string> = {
++  wood: "🪵",
++  stone: "🪨",
++  iron: "⚙️",
++  food: "🍞",
++  gold: "💰",
++  crystal: "💎",
++  fiber: "🧵",
++  herb: "🌿",
++};
++
+ type ViewMode = "run" | "replay";
+ 
+ export function TopBar({
+@@ -36,6 +47,9 @@ export function TopBar({
+   isReplaying,
+   replayProgress,
+   onHeightChange,
++  resources,
++  onToggleBuildPanel,
++  buildPanelOpen,
+ }: {
+   worldInfo?: WorldInfo | null;
+   gameTime: WorldTimeInfo;
+@@ -57,6 +71,9 @@ export function TopBar({
+   isReplaying: boolean;
+   replayProgress: { current: number; total: number } | null;
+   onHeightChange?: (height: number) => void;
++  resources?: number | null;
++  onToggleBuildPanel?: () => void;
++  buildPanelOpen?: boolean;
+ }) {
+   const { t, i18n } = useTranslation();
+   const navigate = useNavigate();
+@@ -328,6 +345,11 @@ export function TopBar({
+           <span style={{ fontSize: 12, color: "#dfe6e9", whiteSpace: "nowrap" }}>{timeLabel}</span>
+         </div>
+ 
++        {/* Center: resources */}
++        {resources !== null && resources !== undefined && (
++          <ResourceDisplay resources={resources} />
++        )}
++
+         {/* Right: mode toggle + play/pause */}
+         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+           {/* Mode toggle: Run / Replay */}
+@@ -486,6 +508,16 @@ export function TopBar({
+           >
+             {t("topbar.sandboxChat")}
+           </button>
++          {onToggleBuildPanel && resources !== null && resources !== undefined && (
++            <button
++              onClick={onToggleBuildPanel}
++              disabled={inReplayMode}
++              style={{ ...chipBtnStyle(buildPanelOpen ?? false), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
++              title="建造面板"
++            >
++              🏗️ 建造
++            </button>
++          )}
+ 
+           {isDevMode && (
+             <>
+@@ -536,6 +568,11 @@ export function TopBar({
+           90% { opacity: 1; transform: translate(-50%, 0); }
+           100% { opacity: 0; transform: translate(-50%, -10px); }
+         }
++        @keyframes resourcePop {
++          0% { opacity: 0; transform: translateY(0); }
++          30% { opacity: 1; transform: translateY(-4px); }
++          100% { opacity: 0; transform: translateY(-16px); }
++        }
+       `}</style>
+ 
+       {showPauseToast && typeof document !== "undefined" && createPortal(
+@@ -564,6 +601,75 @@ export function TopBar({
+   );
+ }
+ 
++// --- Resource Display Component ---
++
++function ResourceDisplay({ resources }: { resources: number | null | undefined }) {
++  const [animating, setAnimating] = useState(false);
++  const prevResourcesRef = useRef<number>(0);
++
++  useEffect(() => {
++    const prev = prevResourcesRef.current;
++    if (resources !== undefined && resources !== null && resources > prev) {
++      setAnimating(true);
++      const timer = setTimeout(() => setAnimating(false), 600);
++      return () => clearTimeout(timer);
++    }
++    if (resources !== undefined && resources !== null) {
++      prevResourcesRef.current = resources;
++    }
++  }, [resources]);
++
++  if (resources === null || resources === undefined) return null;
++
++  return (
++    <div style={{
++      display: "flex",
++      alignItems: "center",
++      gap: 12,
++      flexWrap: "wrap",
++      justifyContent: "center",
++    }}>
++      <div
++        style={{
++          display: "flex",
++          alignItems: "center",
++          gap: 6,
++          background: "rgba(255, 215, 0, 0.1)",
++          border: "1px solid rgba(255, 215, 0, 0.25)",
++          borderRadius: 999,
++          padding: "4px 12px",
++          fontSize: 13,
++          color: "#ffd700",
++          fontWeight: 600,
++          transition: "transform 0.2s, box-shadow 0.2s",
++          transform: animating ? "scale(1.15)" : "scale(1)",
++          boxShadow: animating ? "0 0 12px rgba(255, 215, 0, 0.5)" : "none",
++          position: "relative",
++        }}
++        title="资源"
++      >
++        <span style={{ fontSize: 16 }}>💎</span>
++        <span style={{ minWidth: 20, textAlign: "right" }}>
++          {resources}
++        </span>
++        {animating && (
++          <span style={{
++            position: "absolute",
++            top: -18,
++            right: 4,
++            fontSize: 11,
++            fontWeight: 700,
++            color: "#ffd700",
++            animation: "resourcePop 0.6s ease-out forwards",
++          }}>
++            +1
++          </span>
++        )}
++      </div>
++    </div>
++  );
++}
++
+ // --- Styles ---
+ 
+ const primaryBtnStyle: CSSProperties = {
+diff --git a/client/src/ui/services/api-client.ts b/client/src/ui/services/api-client.ts
+index d202488..4f50cd2 100644
+--- a/client/src/ui/services/api-client.ts
++++ b/client/src/ui/services/api-client.ts
+@@ -13,6 +13,8 @@ import type {
+   TimelineMeta,
+   TimelineWithWorld,
+   TimelineFrame,
++  BuildState,
++  BuildJobStatus,
+ } from "../../types/api";
+ 
+ const API_BASE = "/api";
+@@ -410,4 +412,34 @@ export const apiClient = {
+       `/timelines/world/${encodeURIComponent(worldId)}/${encodeURIComponent(timelineId)}`,
+     );
+   },
++
++  // --- Build System APIs ---
++
++  getBuildState(): Promise<BuildState> {
++    return fetchJSON("/build/state");
++  },
++
++  collectResource(objectId: string): Promise<{ success: boolean; resources: number; amount: number; reason?: string }> {
++    return postJSON("/build/collect", { objectId });
++  },
++
++  movePlayer(pixelX: number, pixelY: number): Promise<{ ok: boolean; playerState: { pixelX: number; pixelY: number } }> {
++    return postJSON("/build/player/move", { pixelX, pixelY });
++  },
++
++  buildCharacter(prompt: string): Promise<{ ok: boolean; jobId: string }> {
++    return postJSON("/build/character", { prompt });
++  },
++
++  getCharacterBuildJob(jobId: string): Promise<BuildJobStatus> {
++    return fetchJSON(`/build/character/jobs/${encodeURIComponent(jobId)}`);
++  },
++
++  expandMap(direction: "north" | "south" | "east" | "west"): Promise<{ ok: boolean; jobId: string }> {
++    return postJSON("/build/map/expand", { direction });
++  },
++
++  getMapExpandJob(jobId: string): Promise<BuildJobStatus> {
++    return fetchJSON(`/build/map/jobs/${encodeURIComponent(jobId)}`);
++  },
+ };
+diff --git a/docs/architecture.md b/docs/architecture.md
+new file mode 100644
+index 0000000..19e1ca6
+--- /dev/null
++++ b/docs/architecture.md
+@@ -0,0 +1,392 @@
++# WorldX 项目架构技术文档
++
++## 系统总览
++
++WorldX 是一个 AI 驱动的游戏世界生成与模拟系统。用户输入一段自然语言描述，系统自动生成包含地图、角色和交互物件的游戏世界，并支持角色自主行动模拟、玩家操控、资源采集和地图扩展。
++
++系统分为三层：
++
++- **生成层**（`generators/`）：独立 Node 脚本，通过 AI 模型生成地图和角色资产
++- **服务层**（`server/`）：Express + SQLite，管理世界状态、模拟循环、API 路由
++- **客户端**（`client/`）：Phaser 3 游戏引擎 + React UI 双栈架构
++
++三层之间的核心交互模式是**子进程 spawn + stdout 解析**：服务层通过 `child_process.spawn` 调用生成脚本，解析 stdout 中的进度标记来跟踪任务状态。生成完成后，服务层读取产出文件（TMJ、PNG、精灵图）加载到运行时。
++
++```
++┌──────────────────────────────────────────────────────┐
++│                    客户端 (Client)                     │
++│  ┌──────────────┐     ┌───────────────────────────┐  │
++│  │  Phaser 3     │◄──►│  React UI                 │  │
++│  │  游戏引擎      │    │  TopBar/SidePanel/Build  │  │
++│  │  WorldScene   │    │  MapControls/Dialogue    │  │
++│  └──────┬───────┘     └───────────┬───────────────┘  │
++│         │ EventBus.instance       │ fetch / SSE      │
++│         │ (Phaser.Events)         │                  │
++└─────────┼─────────────────────────┼──────────────────┘
++          │                         │
++┌─────────┼─────────────────────────┼──────────────────┐
++│         │     服务层 (Server)      │                  │
++│  ┌──────▼──────────────────────────▼───────────────┐ │
++│  │              AppContext (单例)                    │ │
++│  │  WorldManager │ CharacterManager │ MapExpander   │ │
++│  │  ResourceManager│ PlayerManager │ SimulationEngine│ │
++│  │  LLMClient │ DecisionMaker │ DialogueGenerator  │ │
++│  └──────┬──────────────────────────────────────────┘ │
++│         │ child_process.spawn                        │
++│  ┌──────▼──────┐  ┌──────────────┐  ┌─────────────┐  │
++│  │ CreateJob   │  │ Character    │  │ Map         │  │
++│  │ Manager     │  │ Builder      │  │ Expander    │  │
++│  │ (Orchestrator)│ │ (Character   │  │ (Expand-    │  │
++│  │              │  │  Generator)  │  │  map.mjs)   │  │
++│  └──────────────┘  └──────────────┘  └─────────────┘  │
++│         SQLite (每 timeline 独立 DB)                   │
++└──────────────────────────────────────────────────────┘
++          │
++┌─────────▼────────────────────────────────────────────┐
++│                   生成层 (Generators)                  │
++│  orchestrator/  →  世界设计 + 地图生成 + 角色生成      │
++│  generators/map/  →  6步地图生成管线 + 扩展管线        │
++│  generators/character/  →  角色精灵图生成              │
++│  AI Models: gemini-flash-img / gemini-pro / gemini-2.5│
++└──────────────────────────────────────────────────────┘
++```
++
++## 客户端引擎层
++
++### Phaser 3 + React 双栈架构
++
++客户端的核心设计是**引擎与 UI 分离**。Phaser 3 负责世界渲染、角色动画、碰撞检测等游戏逻辑；React 负责所有 HUD 和面板交互。两者通过一个共享的 `EventBus.instance`（Phaser.Events.EventEmitter 单例）解耦通信，互不直接持有引用。
++
++DOM 层次结构：
++- `#game-root`：Phaser canvas，世界渲染层
++- `#ui-root`：React 面板，顶层 `pointer-events: none`，各面板自行开启 `pointer-events: auto`，实现点击穿透
++- `#label-root`：角色 DOM 标签和对话气泡，跟随 Phaser 坐标
++- `#background-root`：创建世界时的背景动画
++
++这种设计让 Phaser 专注于高性能渲染，而文字、列表、表单等 UI 交给 React 处理，各自发挥优势。
++
++### 场景管理
++
++Phaser 使用两个场景：
++
++**BootScene** 负责资源预加载。在 `init()` 阶段先 `fetch("/api/characters")` 拉取角色清单（避免 preload 内 await 的时序问题），然后在 `preload()` 中同步队列加载：
++- `06-final.tmj`（Tiled 地图 JSON，key = "world-map"）
++- `06-background.png`（地图背景大图，key = "world-base"）
++- 每个角色的 `spritesheet.png`（170×204 像素单帧，6×5 布局 30 帧）
++
++**WorldScene** 是主世界场景（约 1468 行），装配了多个子系统：
++- `MapManager`：解析 Tiled JSON，构建碰撞网格、区域、可交互对象
++- `PathfindingManager`：基于 EasyStar.js 的 A* 寻路
++- `CharacterMovement`：角色移动编排（路径执行、对话就位、环境漫游）
++- `PlaybackController`：tick 推进和回放控制
++- `CameraController`：相机缩放/平移/跟随
++
++每帧 `update()` 执行：相机更新 → 寻路更新 → 回放更新 → 环境漫游 → DOM 标签缩放同步 → Y 轴深度排序。深度排序按 `getSortFootY()` 升序排列 `entityLayer` 中的所有角色，实现"近大远小、下方遮挡上方"的伪 3D 效果。
++
++### 地图背景渲染
++
++地图背景是一张普通图片（`this.add.image(0, 0, "world-base").setOrigin(0, 0)`），**不使用 Tiled 的瓦片渲染**。逻辑地图数据（碰撞、区域、交互对象）全部从 Tiled JSON 的 layers 解析，由 MapManager 管理。背景图仅作为视觉底图。
++
++MapControls 的小地图用独立 `<img>` 加载同一 PNG，在 canvas 上 `drawImage` 绘制并叠加视口矩形框。
++
++### 角色精灵图渲染
++
++每个角色的精灵图是 170×204 像素的 30 帧 spritesheet（6 列×5 行），帧布局：
++- 帧 0-5：向左行走
++- 帧 6-11：向下行走
++- 帧 12-17：向上行走
++- 帧 18-20：站立（下/上/左右，右方向用 `flipX` 复用左方向）
++
++精灵锚点设在 `(0.5, 0.85)`（脚部偏下），配合 `getSortFootY()` 做深度排序。行走动画帧率 8 fps。
++
++角色显示尺寸通过 `createCharacterDisplayMetrics(mapWidth, mapHeight)` 动态计算——精灵高度约为地图宽高和的 4%，所有角色按地图比例统一缩放。这保证了不同尺寸地图上角色的视觉比例一致。
++
++当纹理未就绪时，`CharacterSprite` 先用彩色圆形（`createCircleBody()`）作 fallback，纹理可用后 `tryUpgradeToSprite()` 热切换为精灵体。`WorldScene.syncCharactersFromServer()` 还有动态补加载机制，用 Phaser Loader 运行时加载缺失纹理。
++
++每个角色还创建 DOM 标签（名字 + 动作 emoji + 动作 pill），挂在 `#label-root` 上。`updateDomLabelPosition()` 每帧根据相机 worldView 把世界坐标换算为屏幕坐标，`syncOverlayZoom()` 按 zoom 缩放字号。这是**混合渲染**的关键——Phaser 画精灵，DOM 画清晰文字。
++
++## 世界交互系统
++
++### 碰撞检测
++
++碰撞检测基于 Tiled 的 collision tilelayer，**不使用物理引擎**：
++
++1. `MapManager.parseCollisionLayer()` 把 TMJ 的 `data` 数组转为二维 `collisionGrid[gy][gx]`，0 = 可通行，非 0 = 阻挡
++2. `isWalkable(gx, gy)` 直接查网格
++3. 服务端 `WorldManager.isPixelWalkable(x, y)` 将像素坐标转瓦片索引后查碰撞网格
++
++碰撞网格的来源是生成管线 Step 5 的 CV 计算（详见生成管线文档），通过青色像素 diff 逐 block 检测生成，并经形态学清理去除噪声。
++
++### 寻路系统
++
++`PathfindingManager` 基于 EasyStar.js 实现 A* 寻路：
++
++1. `setGrid(collisionGrid)` + `setAcceptableTiles([0])` 设置网格和可通行值
++2. `applyEdgeCosts()` 对邻接阻挡格的可通行格加 `EDGE_COST = 3`，让路径远离墙壁，避免角色贴墙行走
++3. `findPath()` 流程：像素坐标 → 瓦片坐标 → 终点不可达时 `findNearestWalkable` 螺旋搜索最近可行走格 → A* 计算 → **后处理优化**：
++   - `rebalanceStaircases`：将阶梯路径重整为批量 L 形，减少拐弯次数
++   - `simplifyOrthogonalShortcuts`：用 L 形或直线捷径压缩冗余拐点
++   - 转回像素坐标
++
++角色移动用 **Tween 而非物理速度**：`CharacterSprite.walkAlongPath()` 逐段 `tweens.add({ x, y, duration })`，duration 按 `dist / speed` 计算，`speed = bodyHeight × 1.1`。
++
++### 玩家移动
++
++玩家角色是纯圆形精灵（绿色 0x00b894 + 脉冲发光环），无精灵图。移动控制流程：
++
++1. `setupGroundClickHandler()` 监听 `input.pointerdown`，排除点中精灵/Zone/资源标记的情况
++2. 取 `cameras.main.getWorldPoint()` 并 Clamp 到地图边界（32px 内边距）
++3. `movePlayerTo(x, y)` 执行**乐观更新**：先本地 Tween 移动，同时后台 `apiClient.movePlayer(x, y)` 同步到服务端
++4. 服务端校验可行走性，不可行走则 `findWalkablePixelNear` 螺旋搜索回退
++5. 若服务端返回位置与本地差异 > 10px 且玩家已停，则 snap 到服务端位置
++
++NPC 移动由模拟事件驱动，非玩家直接控制。`CharacterMovement.moveToLocation()` 根据目标位置走 A* 寻路，无路时用 `fadeTransport()`（先走 2/3 可达距离，再淡出→瞬移→淡入）。非移动状态时 `idleWander()` 按 4.5-9s 随机冷却做小范围漫游。
++
++### 资源采集交互
++
++资源采集是玩家与世界交互的核心玩法：
++
++1. **资源点发现**：服务端 `ResourceManager.discoverResourceNodes()` 从 TMJ 交互对象层 + 关键词匹配发现资源点（最多 6 个），客户端通过 `getBuildState()` 获取
++2. **标记显示**：`setupResourceMarkers()` 为每个资源点创建 Container——外圈发光环 + 内填充圆 + 中心 emoji，带脉冲动画
++3. **就近检测**：玩家停止后 `updateNearbyResource()` 遍历资源点，距离 ≤ 120px 且 remaining > 0 时显示采集按钮
++4. **采集执行**：`collectResource(objectId)` 调用 `apiClient.collectResource()`，服务端检查冷却（`cooldownMs`）后增加资源量
++5. **UI 反馈**：TopBar 的 `ResourceDisplay` 检测资源增长触发 +1 弹跳动画
++
++### 地图扩展触发
++
++地图扩展由 React 侧的 `BuildPanel` 发起，是异步 job 模式：
++
++1. BuildPanel 显示东南西北 4 个方向按钮
++2. 检查资源 ≥ 50（默认 `mapExpand` 成本），调用 `apiClient.expandMap(direction)`
++3. 服务端 `MapExpander.startExpandJob()` 扣除资源，spawn 扩展脚本子进程
++4. 客户端 `setInterval(poll, 2000)` 轮询 `getMapExpandJob(jobId)` 获取进度
++5. 扩展完成后，服务端 `worldManager.reloadAfterExpansion()` 重载碰撞网格和世界尺寸
++6. 客户端刷新 buildState 获取新资源点，刷新页面加载新地图
++
++## 可行走区域系统
++
++可行走区域是连接生成管线和运行时交互的关键纽带，贯穿整个系统架构。
++
++### 生成阶段
++
++在地图生成管线的 Step 4，AI 模型在压缩地图上用纯青色 RGB(0, 255, 255) 标注可行走区域。Step 5 的 CV 算法将像素级标注转化为瓦片级碰撞网格：
++
++- 逐 block 比较原图与标注图的 RGB 差异
++- 强青像素覆盖率 ≥ 22% 或弱青覆盖率 ≥ 38% 判定为可行走
++- 细走廊救援机制防止 1 格宽走廊被侵蚀
++- 形态学清理移除孤立噪声格
++
++生成的碰撞网格以一维数组形式存入 TMJ 的 `collision` tilelayer（0 = 可行走，1 = 阻塞）。
++
++### 运行时加载
++
++服务端 `WorldManager.loadCollisionGrid()` 读取 TMJ 的 collision 层，转为 `collisionData: number[]`。同时更新 `worldSize`（`gridWidth × tileSize` × `gridHeight × tileSize`）。
++
++客户端 `MapManager.parseCollisionLayer()` 将同样的数据转为二维 `collisionGrid`，供 `PathfindingManager` 使用。
++
++### 扩展后重载
++
++地图扩展完成后，`MapExpander` 调用 `worldManager.reloadAfterExpansion()`，该方法重新执行 `loadCollisionGrid()` 读取更新后的 TMJ 文件，刷新碰撞网格和世界尺寸。这保证了扩展后的新区域立即可通行，无需重启服务。
++
++### 可行走区域拼接
++
++地图扩展时的可行走区域拼接是整个系统最精密的环节，涉及三个层面的对齐：
++
++**像素层 — 接缝融合**：`blendSeam()` 在新旧地图的拼接边界处做 smoothstep 梯度混合。融合宽度为 `max(tileSize, dimension × 0.03)`，在融合区域内逐像素线性插值新旧像素值，权重用 `t² × (3 - 2t)` 平滑。这保证了视觉上不会出现硬边。
++
++**网格层 — 碰撞网格合并**：`mergeGrids(oldGrid, newGrid, dir)` 将两个二维碰撞网格合并。水平扩展时 `mergedW = oldW + newW`，垂直扩展时 `mergedH = oldH + newH`。旧网格和新网格按方向放置到合并网格的对应位置，未覆盖区域默认填充 1（阻塞）。这保证了可行走区域在新旧区域之间自然延续——原图边缘的道路和新区域中与之相连的道路在合并后的网格中保持连通。
++
++**坐标层 — 对象偏移**：`buildCombinedTMJ()` 处理区域和交互对象的坐标偏移。west/north 扩展时旧对象需要平移（旧区域整体向右或向下移动以腾出新区域的空间），east/south 扩展时新对象需要偏移（新区域放在旧区域的右侧或下方）。偏移量使用实际背景像素尺寸（`oldBgWidth`/`newBgWidth`）而非假设尺寸，保证坐标精确。
++
++```
++扩展前（east方向示例）:
++┌──────────────┐
++│              │
++│   旧地图      │  oldGrid: W×H
++│              │
++└──────────────┘
++
++扩展后:
++┌──────────────┬──────────────┐
++│              │              │
++│   旧地图      │   新区域      │  mergedGrid: (W+W')×max(H,H')
++│              │              │
++└──────────────┴──────────────┘
++               ↑
++          接缝融合区
++     (smoothstep梯度混合)
++```
++
++## 服务端架构
++
++### AppContext 依赖容器
++
++`AppContext` 是服务端的中央依赖注入容器（单例），聚合了所有管理器并通过 `EventEmitter`（`eventBus`）解耦通信。
++
++核心生命周期方法：
++- `initialize(worldDirPath?)`：初始化数据库、时间线，重建运行时
++- `rebuildRuntime()`：实例化并初始化全部管理器（WorldManager → CharacterManager → ... → SimulationEngine），LLMClient 和 PromptBuilder 在重建时保留旧实例
++- `switchWorld(worldDirPath)`：切换世界时关闭旧 DB → 重新加载配置 → 重建运行时 → 开始新录制
++- `switchTimeline(timelineId)`：切换时间线（每个时间线独立 SQLite DB）
++
++### WorldManager 世界状态管理
++
++`WorldManager` 是最核心的管理器（约 1257 行），负责：
++
++- **地图数据加载**：读取 `world.json` 配置和 `06-final.tmj`，加载碰撞网格、世界尺寸、区域配置
++- **主区域点图**：从 TMJ collision 层用 BFS 推导主区域点之间的可达性邻接图，取最大连通分量作为角色出生池
++- **游戏时间**：`advanceTick()` 推进时间，跨天时触发场景重置
++- **可行走性查询**：`isPixelWalkable(x, y)` 像素→瓦片索引查碰撞网格
++- **出生点分配**：`getSpreadMainAreaPointId()` 在最大连通分量中选未占用出生点
++- **物件状态管理**：物件的运行时状态合并、占用管理（含 capacity 检查）
++- **快照系统**：创建/恢复/列出快照
++- **扩展后重载**：`reloadAfterExpansion()` 重新读取 TMJ 刷新碰撞网格
++
++### 模拟引擎
++
++模拟循环由 `SimulationEngine.simulateTick()` 驱动，每个 tick：
++
++1. `WorldManager.advanceTick()` 推进游戏时间
++2. `CharacterManager.tickPassiveUpdate()` 衰减角色需求（curiosity）和情绪
++3. 对每个非静态角色调用 `DecisionMaker.makeDecision()` → LLM 决策
++4. 执行决策（交互物件/全局动作/对话/移动/发呆）
++5. `finalizeTickEvents()` 做戏剧性评分、引用提取、事件存储
++6. `eventBus.emit("tick_events")` → WebSocket 广播 + Timeline 持久化
++
++静态角色（`isStatic: true`）跳过 AI 决策循环，新生成角色默认静态。
++
++### 生成管线交互
++
++服务端通过 `child_process.spawn` 调用三个独立的生成管线：
++
++| 管理器 | 脚本 | 进度解析 | 完成回调 |
++|--------|------|---------|---------|
++| CreateJobManager | orchestrator/src/index.mjs | 多正则解析 Phase/Step/World ID/角色进度 | 持久化日志 |
++| CharacterBuilder | generators/character/src/index.mjs | `ID:`/`Name:`/`Step N`/`Done!` | 复制资源 + 注册角色 |
++| MapExpander | generators/map/src/expand-map.mjs | `[Step N]` 6 步进度映射 | `worldManager.reloadAfterExpansion()` |
++
++共同模式：spawn 子进程 → 监听 stdout 实时打印 + 正则解析进度 → `close(code===0)` 判断成功 → Job 状态存内存 Map，通过 REST 轮询或 SSE 推送。
++
++### API 路由
++
++| 路径前缀 | 路由文件 | 核心功能 |
++|---------|---------|---------|
++| `/api/worlds` | worlds-create.ts | 创建世界（SSE 流式进度）、查询/取消 job |
++| `/api/world` | world.ts | 世界信息、区域、切换世界、删除世界 |
++| `/api/characters` | characters.ts | 角色列表、详情、日记、记忆、编辑人设 |
++| `/api/build` | build.ts | 资源采集、玩家移动、生成角色、扩展地图 |
++| `/api/simulation` | simulation.ts | 推进 tick/天、暂停/恢复/重置 |
++| `/api/events` | events.ts | 事件查询（按天/类型/角色过滤） |
++| `/api/god` | god.ts | 全局广播、角色耳语 |
++| `/api/timelines` | timeline.ts | 时间线管理、回放事件 |
++| `/api/sandbox/chat` | sandbox-chat.ts | 架空对话（纯内存，不持久化） |
++
++### 实时通信
++
++服务端有两套实时通信机制：
++
++**SSE**（Server-Sent Events）：用于世界生成任务的流式进度推送。`GET /api/worlds/jobs/:jobId/events` 返回 `text/event-stream`，先回放历史事件，再实时订阅 `createJobManager.on("event")` 推送，15s 心跳，job 完成后关闭流。
++
++**HTTP 轮询**：模拟推进由客户端 `PlaybackController` 在 autoPlay 下按 `tickIntervalMs` 节奏主动 POST `/simulation/tick` 触发，服务端返回该 tick 的全部事件。建造状态、角色列表、job 进度均通过 setInterval 轮询。
++
++## 通信机制详解
++
++### EventBus 事件系统
++
++`EventBus.instance` 是复用 `Phaser.Events.EventEmitter` 的全局单例，同时注入 Phaser 场景和 React App，构成双向事件总线。
++
++**Phaser → React** 方向的关键事件：
++
++| 事件 | 触发场景 |
++|------|---------|
++| `time_update` | tick 推进后更新游戏时间 |
++| `character_clicked` | 玩家点击角色精灵 |
++| `sim_event` | 模拟事件到达（移动/动作/对话等） |
++| `dialogue` | 对话事件到达 |
++| `simulation_status` | 模拟状态变化（idle/running） |
++| `build_state_updated` | 资源采集后更新建造状态 |
++| `resource_collected` | 资源采集成功 |
++
++**React → Phaser** 方向的关键事件：
++
++| 事件 | 触发场景 |
++|------|---------|
++| `set_auto_play` | TopBar 切换自动播放 |
++| `dev_advance_tick` | 手动推进一个 tick |
++| `follow_character` / `unfollow_character` | 选中角色后跟随 |
++| `camera_zoom_in/out/fit/reset` | 小地图缩放控制 |
++| `camera_pan_to` | 小地图点击跳转 |
++| `toggle_debug_*_overlay` | Dev 模式调试开关 |
++
++WorldScene 在 `create()` 中用具名函数引用注册监听，并在 `SHUTDOWN` 时 `eventBus.off()` 清理，避免内存泄漏。
++
++### Tick 回放同步机制
++
++模拟事件不是即时执行的——一个 tick 可能包含多个事件（移动、对话、动作），每个事件都有动画和持续时间。PlaybackController 通过一套同步握手机制确保所有动画完成后才推进下一个 tick：
++
++1. `emit("tick_playback_started")` — 通知 WorldScene 新 tick 开始
++2. 逐个 `emit("event")` — WorldScene 处理每个事件（移动动画、对话气泡等）
++3. `emit("tick_playback_events_flushed")` — 所有事件已发出
++4. `WorldScene` 通过 `trackPlaybackAsync()` 计数异步操作（动画、定时器、对话链）
++5. 所有异步操作完成后 `emit("tick_playback_complete")`
++6. PlaybackController 收到完成信号，推进下一个 tick
++
++跨天时有额外的遮罩握手：`emit("scene_ending")` → SceneTransition 遮罩覆盖屏幕 → `emit("scene_covered")` → 跨天 tick 在遮罩下执行 → 遮罩淡出。
++
++## 数据持久化
++
++### SQLite 数据库
++
++每个时间线使用独立的 SQLite 数据库（`state.db`），包含以下表：
++
++| 表 | 内容 |
++|---|------|
++| events | 模拟事件（按 tick 记录） |
++| memories | 角色记忆（含衰减因子、访问计数、长期标记） |
++| character_states | 角色易变状态（位置、动作、情绪、需求） |
++| world_object_states | 物件运行时状态 |
++| world_global_state | 全局状态（键值对，如玩家资源、对话会话） |
++| diary_entries | 角色日记 |
++| snapshots | 世界快照 |
++| llm_call_logs | LLM 调用日志 |
++| content_candidates | 内容候选（引用、摘要） |
++
++### 文件系统
++
++世界目录结构：
++
++```
++output/worlds/{worldId}/
++├── world.json                    # 世界配置（区域、物件、角色定义）
++├── world-design.json             # AI 设计的世界描述（区域/元素/动作）
++├── map/
++│   ├── 06-background.png         # 地图背景图（最终输出）
++│   ├── 06-final.tmj              # Tiled 地图 JSON（碰撞/区域/交互对象）
++│   ├── metadata.json             # 生成元数据 + 扩展历史
++│   ├── 06-background.bak-*.png   # 扩展前备份
++│   └── 06-final.bak-*.tmj        # 扩展前备份
++├── characters/{charId}/
++│   ├── spritesheet.png           # 角色精灵图
++│   └── metadata.json             # 角色元数据
++├── config/characters/{charId}.json  # 角色配置文件
++├── timelines/{timelineId}/
++│   ├── state.db                  # 时间线独立数据库
++│   └── events.jsonl              # 事件流（回放用）
++└── logs/generation.log           # 生成日志
++```
++
++## 世界生成全流程
++
++从用户输入到可交互世界的完整流程：
++
++1. **用户提交提示词**：React 侧 `CreateWorldPage` → `apiClient.createWorld(prompt)` → `createJobManager.startJob()`
++2. **Orchestrator 编排**：spawn `orchestrator/src/index.mjs`，执行 4 个 Phase：
++   - Phase 1：WorldDesigner（LLM）设计世界概念、区域、角色
++   - Phase 2：地图生成管线（6 步，详见生成管线文档）
++   - Phase 3：角色精灵图生成（逐角色调用 character generator）
++   - Phase 4：配置文件生成（world.json、角色配置）
++3. **SSE 实时推送**：每个 Phase/Step 的进度通过 SSE 流推送到客户端
++4. **世界加载**：生成完成后 `appContext.switchWorld(worldDir)` 加载新世界
++5. **客户端启动**：BootScene 预加载资源 → WorldScene 初始化角色和玩家 → 进入可交互状态
++
++整个生成过程通常需要数分钟（取决于 AI 模型响应速度和图像尺寸档位），客户端通过 SSE 实时显示进度。
+diff --git a/docs/expansion-fix-plan.md b/docs/expansion-fix-plan.md
+new file mode 100644
+index 0000000..66377b0
+--- /dev/null
++++ b/docs/expansion-fix-plan.md
+@@ -0,0 +1,103 @@
++# 地图扩展管线集成修复规划
++
++## 问题概述
++
++对照生成管线文档和架构文档审查后，发现扩展管线本身（6 步生成流程）是正确的，但扩展完成后与运行时的集成存在 3 个问题，导致新区域虽然在地图上可见，但在游戏逻辑中"不存在"。
++
++## 问题分析
++
++### 问题 1：reloadAfterExpansion 不完整
++
++**现状**：`world-manager.ts` 的 `reloadAfterExpansion()` 只调用了 `loadCollisionGrid()`，仅刷新碰撞网格和 worldSize。
++
++**缺失项**：
++- `mainAreaPoints` 邻接图未重建 —— 新区域的可行走路径不会反映到角色寻路图
++- `preferredMainAreaPointIds` 未更新 —— 新区域的主区域点不加入出生池
++- `locationConfigs` 未重载 —— `world.json` 未更新（见问题 2），新区域不出现在 `getLocations()` 返回中
++
++**影响**：扩展后新区域的碰撞网格可用（角色可以走过去），但新区域不会有主区域路径点，新生成角色不会出生在新区域，`getLocations()` 也不显示新区域。
++
++### 问题 2：world.json 未更新
++
++**现状**：扩展管线更新了 `06-final.tmj`（含新区域/元素的 object 层）和 `world-design.json`，但没有更新 `world.json`。`WorldManager` 从 `world.json` 读取 `locationConfigs` 和 `mainAreaPoints`。
++
++**影响**：
++- `getLocations()` 不返回新区域
++- `getLocationObjects()` 不包含新交互物件
++- `ResourceManager.discoverResourceNodes()` 的方式 1（从 location objects 找）不会发现新资源点（但方式 2 从 TMJ fallback 仍可发现）
++
++### 问题 3：客户端无热重载
++
++**现状**：`BuildPanel` 轮询到 job 完成后只更新 buildState，不触发 Phaser 场景重启。`BootScene` 在启动时加载 TMJ 和背景图，扩展完成后客户端需要手动刷新页面才能看到新地图。
++
++**影响**：用户体验差，扩展完成后看到 flash 提示但地图不变化。
++
++## 修复方案
++
++### 修复 1：扩展管线写入 world.json
++
++在 `expand-map.mjs` 的 Step 6 中，`buildCombinedTMJ` 之后增加 `updateWorldJson` 步骤：
++
++1. 读取现有 `world.json`
++2. 根据 TMJ 新增的 regions 层，为每个新区域生成 `LocationConfig` 追加到 `locations` 数组
++3. 根据 TMJ 新增的 interactive_objects 层，为每个新元素生成 `ObjectConfig` 追加到对应 location 的 `objects` 数组
++4. 为新区域生成 `MainAreaPointConfig`（在区域中心找可行走点），追加到 `mainAreaPoints` 数组
++5. 写回 `world.json`
++
++新增辅助函数 `updateWorldJson(worldDir, finalTMJ, oldTMJ, direction, newRegions, newElements, newGrid, tileSize, oldBgWidth, oldBgHeight, newRegionBgWidth, newRegionBgHeight)`：
++
++- 读取 `world.json`
++- 从 `finalTMJ.layers` 中解析出所有 regions 和 interactive_objects
++- 筛选出新区域和新元素（通过对比 oldTMJ 的对象 id 范围）
++- 为每个新区域创建 `LocationConfig`：id 取 TMJ region 的 name slug，name 取 region name，description 取 region description，adjacentLocations 填充相邻区域 id
++- 为每个新元素创建 `ObjectConfig`：id 取 TMJ object 的 objectId property，name 取 name，locationId 填对应区域 id，defaultState 设为 "idle"，interactions 设为默认交互列表
++- 为每个新区域创建 `MainAreaPointConfig`：在区域的 TMJ 坐标范围内，从合并后的碰撞网格中找第一个可行走格作为路径点，id 格式 `map_expand_{direction}_{regionId}`
++- 新主区域点的 `adjacentPointIds` 设为空数组（由 `rebuildMainAreaPointAdjacencyFromTmj` 在运行时重建）
++
++### 修复 2：reloadAfterExpansion 完整重载
++
++修改 `world-manager.ts` 的 `reloadAfterExpansion()`：
++
++1. 调用 `loadWorldConfig(worldDir)` 重新读取 `world.json`（需先调用 `invalidateWorldConfigCache()` 清缓存）
++2. 执行 `normalizeLocations()` 重新归一化区域配置
++3. 调用 `loadCollisionGrid()` 重载碰撞网格和 worldSize
++4. 调用 `rebuildMainAreaPointAdjacencyFromTmj()` 重建主区域点邻接图和 `preferredMainAreaPointIds`
++
++### 修复 3：ResourceManager 扩展后重新发现
++
++修改 `resource-manager.ts`，新增 `rediscoverAfterExpansion()` 方法：
++
++1. 清空 `this.resourceNodes`
++2. 重新调用 `this.discoverResourceNodes()`
++
++修改 `map-expander.ts`，在 `worldManager.reloadAfterExpansion()` 之后调用 `resourceManager.rediscoverAfterExpansion()`。需要给 `MapExpander` 构造函数注入 `ResourceManager` 引用。
++
++### 修复 4：客户端热重载
++
++方案：扩展完成后触发 Phaser 场景重启。
++
++**服务端**：`map-expander.ts` 在 job 完成消息中明确返回 `requiresReload: true` 标记。
++
++**客户端**：`BuildPanel.tsx` 检测到 job done 时：
++1. 通过 `eventBus.emit("map_expanded")` 发送事件
++2. `WorldScene` 监听 `map_expanded`，执行 `this.scene.restart()` 或 `this.scene.start("BootScene")` 重新加载资源
++3. `App.tsx` 监听 `map_expanded`，触发 `window.location.reload()` 做完整刷新（最简单可靠的方案）
++
++选择 `window.location.reload()` 方案，因为 Phaser 场景重启无法可靠地清除旧纹理缓存，而完整刷新保证所有资源（TMJ、背景图、精灵图）从服务端重新加载。扩展完成时给用户一个确认提示。
++
++## 修复顺序
++
++1. 修复 1（expand-map.mjs 写入 world.json）—— 基础数据
++2. 修复 2（reloadAfterExpansion 完整重载）—— 运行时加载
++3. 修复 3（ResourceManager 重新发现）—— 资源点
++4. 修复 4（客户端热重载）—— 用户体验
++5. 编译验证
++
++## 验证标准
++
++- 扩展后 `getLocations()` 返回新区域
++- 扩展后 `getBuildState().resourceNodes` 包含新资源点
++- 扩展后 `worldManager.collisionGridWidth/Height` 反映新尺寸
++- 扩展后 `worldManager.preferredMainAreaPointIds` 包含新区域的主区域点
++- 扩展完成后客户端自动刷新，显示新地图
++- TypeScript 编译 + JS 语法检查通过
+diff --git a/docs/generation-pipeline.md b/docs/generation-pipeline.md
+new file mode 100644
+index 0000000..7669e7d
+--- /dev/null
++++ b/docs/generation-pipeline.md
+@@ -0,0 +1,372 @@
++# WorldX 地图生成管线技术文档
++
++## 概述
++
++WorldX 的地图生成管线是一个多阶段、多模型协作的自动化流程，从一段自然语言描述出发，最终产出一张可交互的游戏地图——包含背景图、碰撞网格、功能区域标注、可交互元素标注和可行走区域数据。整个管线由 6 个步骤组成，其中 3 个标注步骤并行执行以缩短总耗时。
++
++管线的核心设计理念是**自反馈循环**：每个关键步骤都包含"生成 → 多模态审查 → 失败则调整提示词重试"的闭环，通过多轮迭代保证输出质量。
++
++```
++用户提示词 + 世界设计
++        │
++   Step 1: 文生图（含多模态审查自反馈）
++        │
++   Step 2: 图像压缩
++        │
++   ┌────┼────┐
++   │    │    │     ← 三步并行
++ Step3  3.2  4
++   │    │    │
++   └────┼────┘
++        │
++   Step 5: 可行走网格计算（CV算法）
++        │
++   Step 6: TMJ构建 + 背景图重采样 + 输出
++```
++
++## AI 模型分工
++
++管线使用三个不同定位的 AI 模型，各司其职：
++
++| 模型 | 定位 | 调用方式 | 用于哪些步骤 |
++|------|------|----------|-------------|
++| gemini-3.1-flash-image | 图像生成/编辑 | 文生图 / 图生图 | Step 1 地图生成、Step 3/3.2 彩色叠加、Step 4 可行走标注、扩展 Step 2 区域生成 |
++| gemini-3.1-pro-preview | 多模态视觉审查 | 文本+图像输入 | Step 1 审查、Step 3/3.2 区域确认、Step 4 审查、扩展 Step 2 审查 |
++| gemini-2.5-pro-preview | 推理/设计 | 纯文本对话 | Step 1 提示词调整、扩展 Step 1 新区域设计 |
++
++图像生成模型通过 OpenRouter API 调用，支持文生图（`generateImage`）和图生图（`editImage`）两种模式。视觉审查模型接收文本提示词和一张或多张图片（转为 base64 data URL），返回结构化 JSON 判断。推理模型用于需要逻辑推理的任务，如将审查反馈整理为可执行的提示词约束、设计新区域的内容规划。
++
++所有模型调用都经过 `withRetry` 包装，最多 2 次连续失败重试。推理模型还具备**结构化输出能力降级机制**：优先尝试 `response_format: { type: "json_object" }`，若遇到不支持错误则自动缓存降级为纯提示词模式，后续调用直接走降级路径。
++
++## Step 1：地图生成
++
++入口函数 `generateMap(userPrompt, worldDesign, save, { originalUserPrompt })`。
++
++### 自反馈循环
++
++Step 1 的核心是一个最多 4 轮（`MAX_RETRIES + 1`）的生成-审查循环：
++
++1. **加载提示词**：`loadPrompt("step1-map-generation.md", ...)` 装载模板，填入世界设计摘要（区域规划、元素规划、地图计划、全局动作）。首轮无额外约束，后续轮次会累积上轮审查反馈。
++
++2. **文生图**：调用 `generateImage(prompt, { aspectRatio: "16:9", imageSize: MAP_IMAGE_SIZE })`。图像尺寸由 `MAP_IMAGE_SIZE_K` 环境变量控制（支持 1K/2K/4K 三档），4K 模式下生成约 4096×2304 的地图。
++
++3. **缩小审查**：用 `resizeImage(mapBuffer, 1024)` 将生成图缩小到 1024px 宽度，送入 `geminiProVisionJSON` 做视觉审查。审查提示词要求检查 16 项：俯视角度、建筑横切状态、入口缺口形态、道路连通性、无人物/文字、IP 忠实度等。
++
++4. **通过判断**：`review.pass` 为 true 则返回；否则进入调整流程。
++
++5. **提示词调整**：调用推理模型 `chat()` 将审查返回的 `promptAdjustments`（英文列表）整理为中文约束文本，累积拼接到 `additionalConstraints` 变量中，供下一轮生成使用。
++
++### 提示词约束要点
++
++Step 1 的生成提示词包含 17 条硬约束，关键包括：
++
++- 接近 90 度正俯视视角，不允许透视或等距视角
++- 可进入建筑必须是横切状态（无屋顶，能看到室内布局），入口是墙壁上的 `||` 型缺口（无门、无门框）
++- 景观建筑可保留完整屋顶
++- 道路必须连通且不被遮挡
++- 绝对不能出现人物或文字
++- 建筑之间有道路连接，功能区分布合理
++
++## Step 2：图像压缩
++
++入口函数 `compressMap(originalBuffer)`。
++
++压缩步骤不改分辨率，只优化文件体积以减少后续标注步骤的 token 消耗。生成三个候选变体：
++
++1. **原始 PNG**：直接使用输入
++2. **无损 PNG 重压缩**：`compressionLevel: 9, effort: 10, adaptiveFiltering: true`
++3. **低损调色板 PNG**：`palette: true, quality: 95, colors: 256, dither: 0.25`
++
++三个候选按字节数升序排序，选最小的作为输出。对于游戏地图这类色块分明、细节相对简单的图像，调色板模式通常能取得最佳压缩率。
++
++## Step 3：功能区域标注
++
++入口函数 `resolveDesignedRegions(compressedBuffer, worldDesign, userPrompt, save)`。
++
++### 三阶段循环
++
++Step 3 同样采用自反馈循环（默认 2 轮重试），每轮包含三个阶段：
++
++**Phase A — 批量彩色叠加**：将 `worldDesign.regions` 中待定位的区域分批（每批最多 4 个），每批调用 `editImage()` 让图像生成模型在压缩地图上画轴对齐矩形。每个区域分配一种颜色（青/品红/黄/蓝四色循环），矩形要求 4px 边框 + 55-70% 半透明填充。生成后调用 `extractRegionBoxesFromMarkedImage()` 通过图像 diff 提取每个颜色对应的边界框。
++
++**Phase B — 画标注图**：用 `drawBoundingBoxes()` 在原图上叠加品红色矩形框和区域 id 标签，生成一张人类和模型都能看懂的标注可视化图。
++
++**Phase C — 多模态确认**：将原始压缩图和标注图一起送入 `geminiProVision`，让模型判断哪些区域的标注存在问题（完全偏离、严重偏大、覆盖其他区域、id 不匹配）。模型返回 `problematic_region_ids` 和反馈文本。问题区域的坐标被清除，重新标记为 pending 进入下一轮；反馈文本累积为下一轮的约束。
++
++### 颜色叠加提取算法
++
++`extractRegionBoxesFromMarkedImage` 是 Step 3 的核心算法，工作原理：
++
++1. **block 自适应**：根据图像宽度选择 block 大小（≤1500px→4, ≤3000px→6, 否则 8）
++2. **逐 block 比较**：将原图和标注图按 block 网格对齐，计算每个 block 内的平均 RGB 差值
++3. **颜色评分**：对有显著差异的 block，用 `scoreColorOverlay()` 基于-alpha 混合模型评分。该函数模拟半透明叠加过程：计算原始色到目标色的向量，估算 alpha 值（0.08≤alpha≤1.2 为有效），再计算重建误差。评分 = `alpha×90 + closenessGain×0.25 - reconstructionError×0.6`
++4. **连通域分析**：对同一颜色的 block 用栈式 4 邻接 floodFill 求连通域，取面积≥最大域面积 15% 的域求并集边界框
++5. **边界裁剪**：`TRIM_THRESHOLD=0.35` 裁掉稀疏边缘行/列，`INSET_RATIO=0.03` 向中心内缩 3%，消除叠加溢出
++
++### 坐标缩放
++
++`scaleRegions(regions, origWidth, compressedWidth)` 将区域坐标从压缩图分辨率缩放回原始生成图分辨率，比例因子 = `origWidth / compressedWidth`。
++
++## Step 3.2：可交互元素标注
++
++入口函数 `locateElements(compressedBuffer, worldDesign, userPrompt, save)`。
++
++逻辑与 Step 3 几乎完全镜像，区别在于：
++
++- 数据源是 `worldDesign.interactiveElements` 而非 `regions`
++- 框颜色使用青色 `rgba(0,200,200,0.95)`（Step 3 用品红）
++- 确认提示词更宽松：有明显重叠即通过，不确定的判通过
++- 可忽略无法在图中找到对应位置的元素
++
++## Step 4：可行走区域标注
++
++入口函数 `generateWalkableMap(compressedMapBuffer, userPrompt, worldDesign, save)`。
++
++### 标注方式
++
++调用 `editImage(prompt, compressedMapBuffer, { imageSize: "1K" })` 让图像生成模型在可行走区域叠加纯青色 RGB(0, 255, 255)，不透明度 70-80%。提示词要求：
++
++- 主路必须连通
++- 功能区内部可达
++- 打通狭窄门框（1 格宽走廊要标记为可行走）
++- 禁止穿墙
++- 停车场、花坛等非行走区域不标
++
++### 审查循环
++
++与 Step 1 类似的自反馈循环，审查时将原图和标注图双图对比送入 `geminiProVisionJSON`。审查优先检查主路连通性和功能区可达性，小瑕疵可接受。失败时直接将 `promptAdjustments` 拼接到 `additionalInstructions`（不经推理模型整理），进入下一轮重试。
++
++## Step 5：可行走网格计算
++
++入口函数 `computeGrid(originalBuffer, markedBuffer, origWidth)`。
++
++这是整个管线中最关键的 CV（计算机视觉）步骤，将像素级的可行走标注转化为瓦片级的碰撞网格。
++
++### 计算流程
++
++1. **确定 tile 大小**：`BLOCK_SIZE = getTileSize()`，与图像尺寸档位线性相关（4K→16px, 2K→8px, 1K→4px）
++
++2. **对齐分辨率**：将原始地图图上采样到标注图的尺寸（`fit: "fill"`），确保两图像素一一对应。这一步绝不缩小标注图，因为缩小会稀释青色信号导致检测率下降。
++
++3. **缩放计算**：`scale = markWidth / origWidth`，`actualBlockSize = round(tileSizeAtSource × scale)`
++
++4. **逐块比较**：每个 block 内逐像素累加 RGB 值，计算原图与标注图的 delta。对每个像素检测青色特征：
++   - 强青像素：`deltaG ≥ 18 && deltaB ≥ 18 && deltaR ≤ 8`
++   - 弱青像素：`deltaG ≥ 10 && deltaB ≥ 10 && deltaR ≤ 14`
++
++5. **可行走判定**：block 内强青覆盖率 ≥ 22%，或弱青覆盖率 ≥ 38% 且整体青色偏移 ≥ 8，则判定为可行走（grid 值 = 0），否则为阻塞（grid 值 = 1）
++
++6. **细走廊救援**：被判定为阻塞的格，若其水平或垂直两端都是可行走格，且有中等青色证据（强青覆盖率 ≥ 8%），则保留为可行走。这防止 1 格宽的走廊因信号不足被侵蚀
++
++### 网格清理
++
++`cleanupGrid(rawGrid)` 做形态学清理：仅移除"4 邻接全是阻塞"的孤立可行走格（单格噪声），不填充阻塞间隙。这保证门框、走廊等狭窄通道不被误清。
++
++## Step 6：输出构建
++
++入口函数 `buildOutput({ grid, gridWidth, gridHeight, tileSize, regions, elements, backgroundImage })`。
++
++### 坐标转换
++
++在 `index.mjs` 中，Step 3/3.2 输出的区域/元素坐标已经通过 `fromCompressedToWorld` 从压缩图分辨率缩放到原始生成图分辨率。
++
++### 背景图重采样
++
++用 sharp 将原始生成图 resize 到 `gridWidth × tileSize` × `gridHeight × tileSize`（精确 tile 对齐），作为最终背景图 `06-background.png`。
++
++### TMJ 构建
++
++`buildTMJ()` 生成 Tiled 兼容的 JSON 文件 `06-final.tmj`，包含 4 个图层：
++
++| 图层 | 类型 | 内容 |
++|------|------|------|
++| background | imagelayer | 指向 `06-background.png`，记录 imagewidth/imageheight |
++| collision | tilelayer | 一维数组（行优先），0=可行走，1=阻塞 |
++| regions | objectgroup | 每个功能区域含 properties: id, description, regionType, actions, adjacentRegions |
++| interactive_objects | objectgroup | 每个可交互元素含 properties: objectId, interactions |
++
++## 地图扩展管线
++
++入口脚本 `expand-map.mjs`，CLI 用法：`node expand-map.mjs --worldDir <path> --direction <north|south|east|west>`。
++
++扩展管线复用了原管线的全部标注和计算步骤，但增加了边缘对齐和接缝融合两个独有环节。
++
++### Step 1：LLM 设计新区域内容
++
++调用推理模型 `chatJSON()` 加载 `expand-design-region.md` 提示词，让模型基于原图描述和扩展方向，设计新区域的功能区（2-4 个）和可交互元素（2-5 个，其中至少 1 个资源采集点）。模型还需输出 `boundaryConnection` 字段，描述边界处的地形延续性、需要延续的元素和风格要点。
++
++若 LLM 调用失败，使用 fallback 默认设计：1 个区域 + 1 个资源采集点。
++
++### Step 2：Outpainting 生成 + 审查循环
++
++这是扩展管线最核心的步骤，保证新生成区域与原图在尺寸、风格、边界三方面对齐。
++
++#### 种子画布构建
++
++1. **提取边缘条带**：`extractEdgeStrip()` 从原图的扩展方向边缘提取约 12% 宽度（最少 3 个 tile）的真实内容。例如向东扩展时，提取原图最右侧的条带。
++
++2. **构建种子画布**：`buildSeedCanvas()` 创建一张与原图尺寸完全相同的画布，将边缘条带放置在对应侧（向东扩展时放左侧），剩余区域用条带边缘切片拉伸 + `blur(3)` 填充，为图像生成模型提供起始上下文。
++
++#### 图像生成
++
++调用 `editImage(genPrompt, seedCanvas, { imageSize: getMapImageSizeLabel() })` 让模型基于种子画布完成 outpainting。提示词使用方向感知变量：
++
++| 方向 | 边缘位置 | 新区域位置 | 外侧边缘 |
++|------|---------|-----------|---------|
++| east | 左侧 | 右侧 | 最右侧边缘 |
++| west | 右侧 | 左侧 | 最左侧边缘 |
++| south | 上方 | 下方 | 最下方边缘 |
++| north | 下方 | 上方 | 最上方边缘 |
++
++提示词明确告知模型：画布的某侧有约 12% 是从原始地图截取的真实内容，必须保留并自然衔接，其余部分需要补全。
++
++#### 尺寸校正
++
++生成后强制检查尺寸，若与原图不一致则 `resize(oldWidth, oldHeight, { fit: "fill" })` 强制对齐。
++
++#### 多模态审查
++
++将原图和新生成区域都缩小到 1024px，送入 `geminiProVisionJSON` 双图对比审查。审查返回 `boundaryScore`（边界衔接分数 1-10）和 `styleScore`（风格一致性分数 1-10），需两者均 ≥ 6 才通过。失败时将审查反馈累积为 `additionalConstraints` 进入下一轮重试，最多 4 轮。
++
++### Step 3：接缝融合 + 压缩
++
++#### 接缝融合算法
++
++`blendSeam()` 在新旧地图的拼接接缝处做 smoothstep 梯度混合：
++
++1. 计算融合宽度：`BLEND_WIDTH = max(tileSize, dimension × 0.03)`，即至少 1 个 tile 宽，最多占该维度 3%
++2. 在融合区域内，对每个像素计算混合权重 `t = position / BLEND_WIDTH`，再用 smoothstep 平滑：`weight = t × t × (3 - 2t)`
++3. 逐像素线性插值：`output = oldPixel × (1 - weight) + newPixel × weight`
++
++这保证接缝处不会出现硬边，新旧区域的颜色和纹理平滑过渡。
++
++#### 压缩
++
++复用 Step 2 的 `compressMap()` 对融合后的新区域做无损压缩。
++
++### Step 4：并行标注
++
++与原管线完全一致，`Promise.all` 并行执行：
++
++- `resolveDesignedRegions()` — 功能区域标注
++- `locateElements()` — 可交互元素标注
++- `generateWalkableMap()` — 可行走区域标注
++
++标注完成后，`scaleRegions/scaleElements` 将坐标从压缩图缩放回原始分辨率。
++
++### Step 5：可行走网格计算
++
++复用原管线的 `computeGrid(compressedNewRegion, walkableResult.buffer, oldWidth)`，计算新区域的碰撞网格。
++
++### Step 6：拼接 + 合并 + 保存
++
++#### Tile 对齐
++
++计算 tile 对齐的目标尺寸：
++- 旧图：`oldBgWidth = oldTMJ.width × tileSize`，`oldBgHeight = oldTMJ.height × tileSize`
++- 新区域：`newRegionBgWidth = newGridW × tileSize`，`newRegionBgHeight = newGridH × tileSize`
++
++将两个 buffer 都 resize 到各自的 tile 对齐尺寸。
++
++#### 图像拼接
++
++`stitchMaps()` 用 sharp 的 `composite()` 按方向拼接：
++
++| 方向 | 旧图位置 | 新区域位置 | 最终尺寸 |
++|------|---------|-----------|---------|
++| east | left=0, top=0 | left=oldW, top=0 | (oldW+newW) × max(oldH, newH) |
++| west | left=newW, top=0 | left=0, top=0 | (oldW+newW) × max(oldH, newH) |
++| south | left=0, top=0 | left=0, top=oldH | max(oldW, newW) × (oldH+newH) |
++| north | left=0, top=newH | left=0, top=0 | max(oldW, newW) × (oldH+newH) |
++
++#### 碰撞网格合并
++
++`mergeGrids(oldGrid, newGrid, dir)` 将两个二维碰撞网格合并为一个：
++
++- 水平扩展（east/west）：`mergedW = oldW + newW`，`mergedH = max(oldH, newH)`
++- 垂直扩展（south/north）：`mergedW = max(oldW, newW)`，`mergedH = oldH + newH`
++
++放置策略：
++- east：旧网格放左上角 (0,0)，新网格放右侧 (oldW, 0)
++- west：新网格放左上角 (0,0)，旧网格放右侧 (newW, 0)
++- south：旧网格放左上角 (0,0)，新网格放下方 (0, oldH)
++- north：新网格放左上角 (0,0)，旧网格放下方 (0, newH)
++
++#### TMJ 合并
++
++`buildCombinedTMJ()` 将旧 TMJ 的区域/元素对象与新标注的区域/元素合并到一个 TMJ 文件中：
++
++- **坐标偏移**：west/north 扩展时，旧对象需要平移（west 偏移 `newBgWidth`，north 偏移 `newBgHeight`）；east/south 扩展时，新对象需要偏移（east 偏移 `oldBgWidth`，south 偏移 `oldBgHeight`）
++- **对象 id**：取旧 TMJ 中最大 id + 1 作为新对象的起始 id，自增分配
++- **图层**：生成与原管线相同的 4 层结构（background/collision/regions/interactive_objects）
++
++#### 坐标重缩放
++
++新区域/元素的标注坐标在压缩图分辨率下确定，经 `scaleRegions/scaleElements` 缩放到原始生成图分辨率后，还需要再用 `scaleCoords()` 从生成图分辨率缩放到 tile 对齐背景分辨率（`newRegionBgWidth × newRegionBgHeight`）。
++
++旧 TMJ 中的对象坐标已经是旧背景图分辨率（`oldBgWidth × oldBgHeight`），无需重缩放。
++
++#### 保存与备份
++
++1. 备份旧文件：`06-background.bak-{timestamp}.png` 和 `06-final.bak-{timestamp}.tmj`
++2. 写入新文件：`06-background.png`（拼接后的大图）和 `06-final.tmj`（合并后的 TMJ）
++3. 更新 `world-design.json`：追加新区域和新元素
++4. 更新 `metadata.json`：记录扩展历史（方向、时间、前后尺寸、新增区域/元素数量）
++
++## 配置参数
++
++### 图像尺寸与 Tile 大小
++
++| 参数 | 环境变量 | 默认值 | 说明 |
++|------|---------|--------|------|
++| 图像尺寸档位 | `MAP_IMAGE_SIZE_K` | 1 | 支持 1/2/4，决定生成图分辨率 |
++| Tile 像素大小 | `BLOCK_SIZE` | (K/4)×16 | 4K→16px, 2K→8px, 1K→4px |
++
++### 超时与重试
++
++| 参数 | 环境变量 | 默认值 |
++|------|---------|--------|
++| Step 1 生成超时 | `STEP1_GENERATE_TIMEOUT_MS` | 180000 |
++| Step 1 审查超时 | `STEP1_REVIEW_TIMEOUT_MS` | 90000 |
++| Step 1 重试次数 | `STEP1_MAX_RETRIES` | 3 |
++| Step 3 叠加超时 | `STEP3_OVERLAY_TIMEOUT_MS` | 240000 |
++| Step 3 重试次数 | `STEP3_MAX_RETRIES` | 2 |
++| Step 4 重试次数 | `STEP4_MAX_RETRIES` | 3 |
++| 扩展生成超时 | `EXPAND_GENERATE_TIMEOUT_MS` | 240000 |
++| 扩展审查超时 | `EXPAND_REVIEW_TIMEOUT_MS` | 120000 |
++| 扩展重试次数 | `EXPAND_MAX_RETRIES` | 3 |
++
++### 模型配置
++
++| 模型 | 环境变量前缀 | 默认模型 |
++|------|-------------|---------|
++| 图像生成 | `IMAGE_GEN_*` | google/gemini-3.1-flash-image-preview |
++| 视觉审查 | `VISION_*` | google/gemini-3.1-pro-preview |
++| 推理设计 | `ORCHESTRATOR_*` | google/gemini-2.5-pro-preview |
++
++每个前缀支持 `*_BASE_URL`、`*_API_KEY`、`*_MODEL` 三个环境变量。
++
++## 数据流总结
++
++```
++userPrompt + worldDesign.json
++        │
++        ▼
++[Step 1] generateImage ──→ originalMap (Buffer)
++        │   ↑ geminiProVision 审查自反馈
++        ▼
++[Step 2] compressMap ──→ compressedMap (更小 Buffer, 同分辨率)
++        │
++        ├─→ [Step 3]   editImage(彩色叠加) → extractBoxes(diff) → confirm(geminiPro) → regions[]
++        ├─→ [Step 3.2] editImage(彩色叠加) → extractBoxes(diff) → confirm(geminiPro) → elements[]
++        └─→ [Step 4]   editImage(青色标注) → review(geminiPro) → walkableMap (Buffer)
++                                                    │
++                                                    ▼
++              [Step 5] computeWalkableGrid(originalMap, walkableMap) → grid[][]
++                                                    │
++                                                    ▼
++              [Step 6] scaleCoords(regions/elements) + sharp.resize(originalMap → bgSize)
++                      → buildTMJ() → 06-final.tmj + 06-background.png
++```
++
++核心数据契约：所有坐标先在压缩图分辨率下确定，最后统一通过 `origWidth / compressedWidth` 比例缩放到世界坐标；碰撞网格通过青色像素 diff 逐 block 检测生成；扩展管线在拼接时通过 smoothstep 融合消除接缝，通过网格偏移合并碰撞数据。
+diff --git a/generators/map/prompts/expand-design-region.md b/generators/map/prompts/expand-design-region.md
+new file mode 100644
+index 0000000..1be845e
+--- /dev/null
++++ b/generators/map/prompts/expand-design-region.md
+@@ -0,0 +1,76 @@
++你是一名游戏世界设计师。现在需要为一张已有地图向{{direction}}方向扩展一块新区域。
++
++## 现有世界信息
++- 地图描述：{{mapDescription}}
++- 世界描述：{{worldDescription}}
++- 扩展方向：{{directionText}}
++
++## 现有功能区（在旧地图中）
++{{existingRegions}}
++
++## 现有可交互元素（在旧地图中）
++{{existingElements}}
++
++## 连接边界信息
++新区域与旧地图在{{directionText}}边缘接壤，必须保证：
++1. 如果旧地图边缘有道路/路径，新区域必须让道路自然延伸进来
++2. 地形风格必须延续（如旧地图边缘是草地，新区域不应突然变成沙漠）
++3. 建筑风格、植被类型、配色方案必须与旧地图一致
++4. 新旧区域之间必须有清晰的可行走连接
++
++## 设计要求
++请为新区域设计：
++1. **2-4个新功能区**（regions）：这些是新区域中的主要建筑/户外区域，必须有明确的功能和视觉描述
++2. **2-5个新可交互元素**（interactiveElements）：这些是散布在新区域中的可交互物体，必须包含至少1个资源采集点（resource node），其余可以是摊位、装饰、NPC站等
++3. 功能区和元素的位置提示（placementHint）应该相对于新区域描述（如"新区域西北角"、"靠近与旧地图连接的入口处"等）
++
++## 资源采集点要求
++必须包含至少1个资源采集点，id以"resource_"开头，类型适合当前世界风格（如矿点、树木、农田、宝箱等），玩家可以与之交互采集资源。
++
++## 输出格式
++请严格按照以下JSON格式输出，不要输出其他内容：
++
++```json
++{
++  "regions": [
++    {
++      "id": "new_region_1",
++      "name": "区域名称",
++      "description": "区域详细描述",
++      "type": "building 或 outdoor",
++      "enterable": true或false,
++      "placementHint": "位置提示（如新区域东侧、靠近连接边缘等）",
++      "visualDescription": "视觉外观详细描述（建筑风格、颜色、材质等）",
++      "interactions": [
++        {
++          "id": "action_id",
++          "name": "动作名称",
++          "description": "动作描述"
++        }
++      ]
++    }
++  ],
++  "interactiveElements": [
++    {
++      "id": "resource_1",
++      "name": "资源点名称",
++      "description": "资源点描述",
++      "placementHint": "位置提示",
++      "visualDescription": "外观描述",
++      "interactions": [
++        {
++          "id": "collect",
++          "name": "采集",
++          "description": "采集资源",
++          "effects": [{"type": "character_need", "target": "resources", "value": 1}]
++        }
++      ]
++    }
++  ],
++  "boundaryConnection": {
++    "terrainAtBoundary": "边界处的地形描述（如石板路延伸、草地过渡、河流岸边等）",
++    "continuingElements": "需要延续的元素（如道路、河流、围墙等）",
++    "styleNotes": "风格延续要点"
++  }
++}
++```
+\ No newline at end of file
+diff --git a/generators/map/prompts/expand-map-generation.md b/generators/map/prompts/expand-map-generation.md
+new file mode 100644
+index 0000000..23418a8
+--- /dev/null
++++ b/generators/map/prompts/expand-map-generation.md
+@@ -0,0 +1,37 @@
++你是一名专业的游戏地图美术师。请基于参考图完成地图扩展绘制。
++
++## 任务
++参考图中{{edgePositionDesc}}是已有地图的边缘地带（包含原始地图内容），请将地图向{{directionText}}自然延伸扩展，补全{{newAreaDesc}}的新区域。新区域必须与已有部分完美衔接。
++
++## 地图描述
++{{mapDescription}}
++
++## 世界描述
++{{worldDescription}}
++
++## 新区域规划
++{{newRegionSummary}}
++
++## 新区域可交互元素
++{{newElementSummary}}
++
++## 边界连接要求
++{{boundaryNotes}}
++
++## 参考图说明
++参考图是为本次扩展准备的工作画布：画布的{{edgePositionDesc}}有约12%宽度/高度的区域是从原始地图边缘截取的真实内容（这是必须保留和衔接的边界），其余部分是需要你来补全的新区域。请从已有边缘内容自然延伸，将整个画布绘制成一张完整、连贯的地图。
++
++## 必须遵守的硬性约束
++1. **与参考图边缘完美衔接**：参考图中的已有内容（边缘条带）显示的道路、地形、建筑、植被必须自然延伸到新区域中，不能在边界处断裂或错位
++2. **视觉风格完全一致**：相同的俯视视角（接近90度正俯视），相同的配色、笔触、细节程度、光照方向
++3. **尺寸精确**：保持图像现有尺寸不变，将空白/模糊填充区域全部绘制成完整地图内容
++4. **绝对不能有任何人物/角色**出现在图中
++5. **不能有任何文字/标签**（中文、英文等任何文字都不行）
++6. **可进入建筑规则**：可进入建筑必须是横切状态（无屋顶，能看到室内），入口是墙壁上的缺口（无门、无门框）；景观建筑可保留完整屋顶
++7. **道路连贯**：如果参考图边缘有道路，新区域中必须有道路与之相连，道路不能被树木/建筑严重遮挡
++8. **地形过渡自然**：草地、土地、水面、沙地等地形在边界处必须平滑过渡，不能出现突兀的颜色或纹理变化
++9. **新区域内容要丰富合理**：按照新区域规划放置建筑和可交互元素，建筑之间有道路连接，至少包含一个资源采集点
++10. **新区域远离边界的外侧边缘**（画布的{{outerEdgeDesc}}）可以是自然的开放边缘（如草地延伸到画面边缘、道路通向远方等），不需要围墙或硬边界
++11. 为保证后续自动标注的准确性，建筑边界、道路、功能区的分界要清晰可辨
++
++{{additionalConstraints}}
+\ No newline at end of file
+diff --git a/generators/map/prompts/expand-map-review.md b/generators/map/prompts/expand-map-review.md
+new file mode 100644
+index 0000000..813d5cd
+--- /dev/null
++++ b/generators/map/prompts/expand-map-review.md
+@@ -0,0 +1,40 @@
++请审查这张扩展后的地图图像，判断它是否满足地图扩展的质量要求。
++
++## 原始地图描述
++{{mapDescription}}
++
++## 扩展方向
++向{{directionText}}扩展。
++
++## 图像说明
++- 第一张图是**原始完整地图**（用于对比风格）
++- 第二张图是**新生成的扩展区域**（与原图尺寸完全一致，将被拼接在原图的{{adjacentEdge}}）
++
++## 审查要点
++请逐一检查以下内容：
++
++1. **风格一致性**：新区域的绘画风格、配色、笔触、光照是否与原始地图一致？
++2. **边界衔接**：新区域{{adjacentEdge}}的内容（道路、地形、建筑）是否看起来能够与原图自然衔接？是否有明显的断裂或突兀变化？
++3. **俯视视角**：是否保持了接近90度的俯视视角？没有透视或等距视角问题？
++4. **无人物**：图中是否没有任何人物/角色？
++5. **无文字**：图中是否没有任何文字标签？
++6. **建筑规范**：可进入建筑是否为无屋顶横切状态、入口是否为缺口而非门？
++7. **道路畅通**：道路是否清晰可见，没有被树木/建筑严重遮挡？
++8. **内容合理**：新区域是否有合理的内容布局（包含建筑、道路、资源点等），不是空旷无物或过于拥挤？
++9. **整体质量**：图像质量是否清晰，没有明显的AI生成瑕疵（如扭曲的建筑、不合理的结构）？
++10. **尺寸完整性**：图像是否完整填充了整个画布，没有半透明/模糊/未完成的区域？
++
++## 输出格式
++请严格按以下JSON格式输出：
++
++```json
++{
++  "pass": true或false,
++  "issues": ["问题1", "问题2"],
++  "boundaryScore": 1-10的分数（10分表示边界可以完美衔接）,
++  "styleScore": 1-10的分数（10分表示风格完全一致）,
++  "promptAdjustments": ["给下一次生成的调整建议1", "调整建议2"]
++}
++```
++
++如果所有要点都通过（boundaryScore >= 7, styleScore >= 7, 没有严重问题），则 pass 为 true。
+\ No newline at end of file
+diff --git a/generators/map/src/expand-map.mjs b/generators/map/src/expand-map.mjs
+new file mode 100644
+index 0000000..8f921b4
+--- /dev/null
++++ b/generators/map/src/expand-map.mjs
+@@ -0,0 +1,1192 @@
++/**
++ * Map expansion script — full pipeline version.
++ *
++ * Follows the same production pipeline as initial map generation:
++ *   Step 1: LLM designs new regions/elements for the expansion area
++ *   Step 2: Generate expansion image via image-to-image (outpainting) with multimodal review
++ *   Step 3: Compress new region
++ *   Step 4: Annotate regions, elements, and walkable areas (parallel) + multimodal review
++ *   Step 5: Compute walkable grid for new region
++ *   Step 6: Stitch images, merge grids/TMJ, save results
++ *
++ * Key guarantees:
++ *   - New region is EXACTLY the same dimensions as original map (perfect tile alignment)
++ *   - Boundary continuity is enforced via prompt engineering + seam blending
++ *   - Full multimodal validation at image gen and annotation stages
++ *
++ * Usage:
++ *   node expand-map.mjs --worldDir <path> --direction <north|south|east|west>
++ */
++
++import dotenv from "dotenv";
++import fs from "node:fs";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
++import sharp from "sharp";
++
++import { editImage } from "./models/gemini-flash-img.mjs";
++import { geminiProVisionJSON } from "./models/gemini-pro.mjs";
++import { chatJSON } from "./models/llm-client.mjs";
++import { compressMap } from "./steps/step2-compress.mjs";
++import { resolveDesignedRegions, scaleRegions } from "./steps/step3-resolve-designed-regions.mjs";
++import { locateElements, scaleElements } from "./steps/step3.2-locate-elements.mjs";
++import { generateWalkableMap } from "./steps/step4-walkable-areas.mjs";
++import { computeGrid } from "./steps/step5-compute-grid.mjs";
++import { loadPrompt } from "./utils/prompt-loader.mjs";
++import { getImageSize, resizeImage } from "./utils/image-utils.mjs";
++import { getMapImageSizeLabel } from "./utils/generation-config.mjs";
++import {
++  formatElementSummary,
++  formatRegionSummary,
++} from "./utils/world-design-summary.mjs";
++import { normalizeWorldDesign } from "../../../orchestrator/src/world-design-utils.mjs";
++
++const __filename = fileURLToPath(import.meta.url);
++const __dirname = path.dirname(__filename);
++const WORLD_SEED_ROOT = path.resolve(__dirname, "../../..");
++dotenv.config({ path: path.join(WORLD_SEED_ROOT, ".env") });
++
++// ─── CLI parsing ────────────────────────────────────────────────────────────
++
++function parseArgs(argv) {
++  const args = {};
++  for (let i = 2; i < argv.length; i++) {
++    const key = argv[i];
++    if (key.startsWith("--") && i + 1 < argv.length) {
++      args[key.slice(2)] = argv[i + 1];
++      i++;
++    }
++  }
++  return args;
++}
++
++const args = parseArgs(process.argv);
++const worldDir = args.worldDir;
++const direction = args.direction;
++
++if (!worldDir || !direction) {
++  console.error("Usage: node expand-map.mjs --worldDir <path> --direction <north|south|east|west>");
++  process.exit(1);
++}
++
++const validDirections = ["north", "south", "east", "west"];
++if (!validDirections.includes(direction)) {
++  console.error(`Invalid direction: ${direction}. Must be one of: ${validDirections.join(", ")}`);
++  process.exit(1);
++}
++
++const mapDir = path.join(worldDir, "map");
++const backgroundPath = path.join(mapDir, "06-background.png");
++const tmjPath = path.join(mapDir, "06-final.tmj");
++const worldDesignPath = path.join(worldDir, "world-design.json");
++
++// ─── Helpers ────────────────────────────────────────────────────────────────
++
++function logStep(stepNum, message) {
++  console.log(`[Step ${stepNum}] ${message}`);
++}
++
++function readWorldDesign() {
++  if (!fs.existsSync(worldDesignPath)) return null;
++  try {
++    return normalizeWorldDesign(JSON.parse(fs.readFileSync(worldDesignPath, "utf-8")));
++  } catch {
++    return null;
++  }
++}
++
++function readTMJ() {
++  return JSON.parse(fs.readFileSync(tmjPath, "utf-8"));
++}
++
++function writeTMJ(tmj) {
++  fs.writeFileSync(tmjPath, JSON.stringify(tmj, null, 2));
++}
++
++function getDirectionText(dir) {
++  return { north: "北边（上方）", south: "南边（下方）", east: "东边（右侧）", west: "西边（左侧）" }[dir];
++}
++
++/**
++ * Extract edge strip from old map for boundary context.
++ */
++async function extractEdgeStrip(oldBuffer, oldWidth, oldHeight, dir, stripSize) {
++  let extractRegion;
++  switch (dir) {
++    case "east": // right edge strip
++      extractRegion = { left: oldWidth - stripSize, top: 0, width: stripSize, height: oldHeight };
++      break;
++    case "west": // left edge strip
++      extractRegion = { left: 0, top: 0, width: stripSize, height: oldHeight };
++      break;
++    case "south": // bottom edge strip
++      extractRegion = { left: 0, top: oldHeight - stripSize, width: oldWidth, height: stripSize };
++      break;
++    case "north": // top edge strip
++      extractRegion = { left: 0, top: 0, width: oldWidth, height: stripSize };
++      break;
++  }
++  return sharp(oldBuffer).extract(extractRegion).png().toBuffer();
++}
++
++/**
++ * Build a seed canvas for outpainting:
++ * - Places the edge strip on the correct side
++ * - Fills remaining area with stretched/blurred continuation of the edge
++ *
++ * For east expansion: edge strip (right edge of old map) is placed on LEFT of canvas,
++ *   fill on RIGHT. The boundary between strip and fill is at strip's right edge.
++ *   We slice the RIGHT edge of the strip to extend rightward.
++ * For west expansion: edge strip (left edge of old map) is placed on RIGHT of canvas,
++ *   fill on LEFT. Boundary is at strip's left edge. Slice LEFT edge of strip to extend leftward.
++ * For south: edge strip (bottom edge) on TOP, fill on BOTTOM. Slice BOTTOM edge to extend down.
++ * For north: edge strip (top edge) on BOTTOM, fill on TOP. Slice TOP edge to extend up.
++ */
++async function buildSeedCanvas(edgeStripBuffer, oldWidth, oldHeight, dir, stripSize) {
++  // Create a blank canvas of the same size as original map
++  const canvas = sharp({
++    create: {
++      width: oldWidth,
++      height: oldHeight,
++      channels: 4,
++      background: { r: 128, g: 128, b: 128, alpha: 1 },
++    },
++  });
++
++  const isHorizontal = dir === "east" || dir === "west";
++  const fillSize = isHorizontal ? oldWidth - stripSize : oldHeight - stripSize;
++
++  let fillBuffer;
++  if (isHorizontal) {
++    // Horizontal expansion (east/west)
++    const sliceWidth = Math.min(8, Math.floor(stripSize / 4));
++    // For east: slice RIGHT edge of strip (extends rightward to fill)
++    // For west: slice LEFT edge of strip (extends leftward to fill)
++    const sliceLeft = dir === "east" ? stripSize - sliceWidth : 0;
++    const sliceRegion = { left: sliceLeft, top: 0, width: sliceWidth, height: oldHeight };
++    const sliceBuffer = await sharp(edgeStripBuffer).extract(sliceRegion).png().toBuffer();
++    fillBuffer = await sharp(sliceBuffer)
++      .resize(fillSize, oldHeight, { fit: "fill" })
++      .blur(3)
++      .png()
++      .toBuffer();
++  } else {
++    // Vertical expansion (south/north)
++    const sliceHeight = Math.min(8, Math.floor(stripSize / 4));
++    // For south: slice BOTTOM edge of strip (extends downward to fill)
++    // For north: slice TOP edge of strip (extends upward to fill)
++    const sliceTop = dir === "south" ? stripSize - sliceHeight : 0;
++    const sliceRegion = { left: 0, top: sliceTop, width: oldWidth, height: sliceHeight };
++    const sliceBuffer = await sharp(edgeStripBuffer).extract(sliceRegion).png().toBuffer();
++    fillBuffer = await sharp(sliceBuffer)
++      .resize(oldWidth, fillSize, { fit: "fill" })
++      .blur(3)
++      .png()
++      .toBuffer();
++  }
++
++  // Composite: place edge strip and fill in correct positions
++  const composites = [];
++
++  switch (dir) {
++    case "east":
++      // Edge strip on left, fill on right
++      composites.push({ input: edgeStripBuffer, left: 0, top: 0 });
++      composites.push({ input: fillBuffer, left: stripSize, top: 0 });
++      break;
++    case "west":
++      // Fill on left, edge strip on right
++      composites.push({ input: fillBuffer, left: 0, top: 0 });
++      composites.push({ input: edgeStripBuffer, left: fillSize, top: 0 });
++      break;
++    case "south":
++      // Edge strip on top, fill on bottom
++      composites.push({ input: edgeStripBuffer, left: 0, top: 0 });
++      composites.push({ input: fillBuffer, left: 0, top: stripSize });
++      break;
++    case "north":
++      // Fill on top, edge strip on bottom
++      composites.push({ input: fillBuffer, left: 0, top: 0 });
++      composites.push({ input: edgeStripBuffer, left: 0, top: fillSize });
++      break;
++  }
++
++  return canvas.composite(composites).png().toBuffer();
++}
++
++/**
++ * Blend the seam between old map and new region to hide any discontinuity.
++ * Creates a gradient blend over BLEND_WIDTH pixels.
++ */
++async function blendSeam(oldBuffer, newRegionBuffer, oldWidth, oldHeight, dir, tileSize) {
++  const BLEND_WIDTH = Math.max(tileSize, Math.round((dir === "east" || dir === "west" ? oldWidth : oldHeight) * 0.03));
++  const isHorizontal = dir === "east" || dir === "west";
++  const seamSize = isHorizontal ? oldHeight : oldWidth;
++
++  // Extract the seam zone from both images
++  let oldSeamRegion, newSeamRegion;
++  switch (dir) {
++    case "east":
++      oldSeamRegion = { left: oldWidth - BLEND_WIDTH, top: 0, width: BLEND_WIDTH, height: oldHeight };
++      newSeamRegion = { left: 0, top: 0, width: BLEND_WIDTH, height: oldHeight };
++      break;
++    case "west":
++      oldSeamRegion = { left: 0, top: 0, width: BLEND_WIDTH, height: oldHeight };
++      newSeamRegion = { left: oldWidth - BLEND_WIDTH, top: 0, width: BLEND_WIDTH, height: oldHeight };
++      break;
++    case "south":
++      oldSeamRegion = { left: 0, top: oldHeight - BLEND_WIDTH, width: oldWidth, height: BLEND_WIDTH };
++      newSeamRegion = { left: 0, top: 0, width: oldWidth, height: BLEND_WIDTH };
++      break;
++    case "north":
++      oldSeamRegion = { left: 0, top: 0, width: oldWidth, height: BLEND_WIDTH };
++      newSeamRegion = { left: 0, top: oldHeight - BLEND_WIDTH, width: oldWidth, height: BLEND_WIDTH };
++      break;
++  }
++
++  const oldSeam = await sharp(oldBuffer).extract(oldSeamRegion).raw().toBuffer();
++  const newSeam = await sharp(newRegionBuffer).extract(newSeamRegion).raw().toBuffer();
++
++  // Create gradient blend mask
++  const channels = 4;
++  const blendedSeam = Buffer.alloc(oldSeam.length);
++  const totalPixels = isHorizontal ? BLEND_WIDTH * oldHeight : oldWidth * BLEND_WIDTH;
++
++  for (let i = 0; i < totalPixels; i++) {
++    // Determine position along the blend axis
++    let t;
++    if (isHorizontal) {
++      const x = i % BLEND_WIDTH;
++      t = dir === "east" ? x / (BLEND_WIDTH - 1) : 1 - x / (BLEND_WIDTH - 1);
++    } else {
++      const y = Math.floor(i / oldWidth);
++      t = dir === "south" ? y / (BLEND_WIDTH - 1) : 1 - y / (BLEND_WIDTH - 1);
++    }
++    // Smoothstep for nicer blending
++    t = t * t * (3 - 2 * t);
++
++    for (let c = 0; c < channels; c++) {
++      const idx = i * channels + c;
++      blendedSeam[idx] = Math.round(oldSeam[idx] * (1 - t) + newSeam[idx] * t);
++    }
++  }
++
++  // Create blended seam image
++  const blendWidth = isHorizontal ? BLEND_WIDTH : oldWidth;
++  const blendHeight = isHorizontal ? oldHeight : BLEND_WIDTH;
++  const blendedSeamImg = await sharp(blendedSeam, {
++    raw: { width: blendWidth, height: blendHeight, channels },
++  }).png().toBuffer();
++
++  // Apply blended seam to new region
++  let seamLeft = 0, seamTop = 0;
++  switch (dir) {
++    case "east": seamLeft = 0; seamTop = 0; break;
++    case "west": seamLeft = oldWidth - BLEND_WIDTH; seamTop = 0; break;
++    case "south": seamLeft = 0; seamTop = 0; break;
++    case "north": seamLeft = 0; seamTop = oldHeight - BLEND_WIDTH; break;
++  }
++
++  return sharp(newRegionBuffer)
++    .composite([{ input: blendedSeamImg, left: seamLeft, top: seamTop }])
++    .png()
++    .toBuffer();
++}
++
++/**
++ * Stitch old map and new region together with exact pixel alignment.
++ */
++async function stitchMaps(oldBuffer, newRegionBuffer, oldWidth, oldHeight, dir) {
++  // Get actual dimensions of both buffers
++  const oldMeta = await sharp(oldBuffer).metadata();
++  const newMeta = await sharp(newRegionBuffer).metadata();
++  const oldW = oldMeta.width;
++  const oldH = oldMeta.height;
++  const newW = newMeta.width;
++  const newH = newMeta.height;
++
++  let finalWidth, finalHeight;
++  let oldLeft = 0, oldTop = 0;
++  let newLeft = 0, newTop = 0;
++
++  switch (dir) {
++    case "east":
++      finalWidth = oldW + newW;
++      finalHeight = Math.max(oldH, newH);
++      newLeft = oldW;
++      break;
++    case "west":
++      finalWidth = oldW + newW;
++      finalHeight = Math.max(oldH, newH);
++      oldLeft = newW;
++      break;
++    case "south":
++      finalWidth = Math.max(oldW, newW);
++      finalHeight = oldH + newH;
++      newTop = oldH;
++      break;
++    case "north":
++      finalWidth = Math.max(oldW, newW);
++      finalHeight = oldH + newH;
++      oldTop = newH;
++      break;
++  }
++
++  return sharp({
++    create: {
++      width: finalWidth,
++      height: finalHeight,
++      channels: 4,
++      background: { r: 0, g: 0, b: 0, alpha: 255 },
++    },
++  })
++    .composite([
++      { input: oldBuffer, left: oldLeft, top: oldTop },
++      { input: newRegionBuffer, left: newLeft, top: newTop },
++    ])
++    .png()
++    .toBuffer();
++}
++
++/**
++ * Merge two collision grids.
++ */
++function mergeGrids(oldGrid, newGrid, dir) {
++  const oldH = oldGrid.length;
++  const oldW = oldGrid[0].length;
++  const newH = newGrid.length;
++  const newW = newGrid[0].length;
++
++  let mergedW, mergedH;
++  switch (dir) {
++    case "east":
++    case "west":
++      mergedW = oldW + newW;
++      mergedH = Math.max(oldH, newH);
++      break;
++    case "south":
++    case "north":
++      mergedW = Math.max(oldW, newW);
++      mergedH = oldH + newH;
++      break;
++  }
++
++  const merged = Array.from({ length: mergedH }, () => new Array(mergedW).fill(1));
++
++  const placeGrid = (grid, offsetX, offsetY) => {
++    for (let y = 0; y < grid.length; y++) {
++      for (let x = 0; x < grid[y].length; x++) {
++        const my = y + offsetY;
++        const mx = x + offsetX;
++        if (my >= 0 && my < mergedH && mx >= 0 && mx < mergedW) {
++          merged[my][mx] = grid[y][x];
++        }
++      }
++    }
++  };
++
++  // Place old grid
++  const oldOffX = dir === "west" ? newW : 0;
++  const oldOffY = dir === "north" ? newH : 0;
++  placeGrid(oldGrid, oldOffX, oldOffY);
++
++  // Place new grid
++  const newOffX = dir === "east" ? oldW : 0;
++  const newOffY = dir === "south" ? oldH : 0;
++  placeGrid(newGrid, newOffX, newOffY);
++
++  return { grid: merged, width: mergedW, height: mergedH };
++}
++
++/**
++ * Build a combined TMJ from old TMJ + new region data.
++ */
++function buildCombinedTMJ(oldTMJ, newRegionData, dir, tileSize, oldBgWidth, oldBgHeight, newBgWidth, newBgHeight) {
++  const { newGrid, newRegions, newElements } = newRegionData;
++  const oldGridData = oldTMJ.layers.find((l) => l.name === "collision")?.data || [];
++  const oldRegions = oldTMJ.layers.find((l) => l.name === "regions")?.objects || [];
++  const oldElements = oldTMJ.layers.find((l) => l.name === "interactive_objects")?.objects || [];
++
++  // Reconstruct old grid
++  const oldGridW = oldTMJ.width;
++  const oldGridH = oldTMJ.height;
++  const oldGrid = [];
++  for (let y = 0; y < oldGridH; y++) {
++    const row = [];
++    for (let x = 0; x < oldGridW; x++) {
++      row.push(oldGridData[y * oldGridW + x] ?? 1);
++    }
++    oldGrid.push(row);
++  }
++
++  // Merge grids
++  const { grid: mergedGrid, width: mergedW, height: mergedH } = mergeGrids(oldGrid, newGrid, dir);
++
++  // Calculate pixel coordinate offsets based on ACTUAL image dimensions
++  // (not just oldWidth/oldHeight, to handle any size mismatches robustly)
++  let pixelOffsetX = 0, pixelOffsetY = 0; // offset for OLD objects
++  let newPixelOffsetX = 0, newPixelOffsetY = 0; // offset for NEW objects
++
++  switch (dir) {
++    case "west":
++      // New region is on the LEFT, old shifts right by newBgWidth
++      pixelOffsetX = newBgWidth;
++      newPixelOffsetX = 0;
++      break;
++    case "north":
++      // New region is on TOP, old shifts down by newBgHeight
++      pixelOffsetY = newBgHeight;
++      newPixelOffsetY = 0;
++      break;
++    case "east":
++      // Old stays, new region is on the RIGHT
++      pixelOffsetX = 0;
++      newPixelOffsetX = oldBgWidth;
++      break;
++    case "south":
++      // Old stays, new region is on the BOTTOM
++      pixelOffsetY = 0;
++      newPixelOffsetY = oldBgHeight;
++      break;
++  }
++
++  // Offset existing objects if expanding west/north (they shift)
++  const offsetOldRegions = oldRegions.map((r) => ({
++    ...r,
++    x: r.x + pixelOffsetX,
++    y: r.y + pixelOffsetY,
++  }));
++  const offsetOldElements = oldElements.map((e) => ({
++    ...e,
++    x: e.x + pixelOffsetX,
++    y: e.y + pixelOffsetY,
++  }));
++
++  // Convert new regions to TMJ objects with offset
++  let nextObjId = Math.max(
++    0,
++    ...[...offsetOldRegions, ...offsetOldElements].map((o) => o.id || 0),
++  ) + 1;
++
++  const newRegionObjs = newRegions.map((r) => ({
++    id: nextObjId++,
++    name: r.name || r.id,
++    type: "",
++    x: r.topLeft.x + newPixelOffsetX,
++    y: r.topLeft.y + newPixelOffsetY,
++    width: r.bottomRight.x - r.topLeft.x,
++    height: r.bottomRight.y - r.topLeft.y,
++    rotation: 0,
++    visible: true,
++    properties: [
++      { name: "id", type: "string", value: r.id },
++      { name: "description", type: "string", value: r.description || "" },
++      { name: "regionType", type: "string", value: r.type || "" },
++      { name: "actions", type: "string", value: JSON.stringify(r.actions || []) },
++      { name: "adjacentRegions", type: "string", value: JSON.stringify(r.adjacentRegions || []) },
++    ],
++  }));
++
++  const newElementObjs = newElements.map((e) => ({
++    id: nextObjId++,
++    name: e.name || e.id,
++    type: "",
++    x: e.topLeft.x + newPixelOffsetX,
++    y: e.topLeft.y + newPixelOffsetY,
++    width: e.bottomRight.x - e.topLeft.x,
++    height: e.bottomRight.y - e.topLeft.y,
++    rotation: 0,
++    visible: true,
++    properties: [
++      { name: "objectId", type: "string", value: e.id },
++      { name: "interactions", type: "string", value: JSON.stringify(e.suggestedInteractions || e.interactions || []) },
++    ],
++  }));
++
++  const bgWidth = mergedW * tileSize;
++  const bgHeight = mergedH * tileSize;
++
++  // Build merged collision data
++  const collisionData = [];
++  for (let y = 0; y < mergedH; y++) {
++    for (let x = 0; x < mergedW; x++) {
++      collisionData.push(mergedGrid[y]?.[x] ?? 1);
++    }
++  }
++
++  return {
++    compressionlevel: -1,
++    width: mergedW,
++    height: mergedH,
++    tilewidth: tileSize,
++    tileheight: tileSize,
++    infinite: false,
++    orientation: "orthogonal",
++    renderorder: "right-down",
++    tiledversion: "1.10.2",
++    type: "map",
++    version: "1.10",
++    layers: [
++      {
++        id: 1,
++        name: "background",
++        type: "imagelayer",
++        image: "06-background.png",
++        imagewidth: bgWidth,
++        imageheight: bgHeight,
++        opacity: 1,
++        visible: true,
++        x: 0,
++        y: 0,
++      },
++      {
++        id: 2,
++        name: "collision",
++        type: "tilelayer",
++        data: collisionData,
++        width: mergedW,
++        height: mergedH,
++        opacity: 1,
++        visible: true,
++        x: 0,
++        y: 0,
++      },
++      {
++        id: 3,
++        name: "regions",
++        type: "objectgroup",
++        objects: [...offsetOldRegions, ...newRegionObjs],
++        opacity: 1,
++        visible: true,
++        x: 0,
++        y: 0,
++        draworder: "topdown",
++      },
++      {
++        id: 4,
++        name: "interactive_objects",
++        type: "objectgroup",
++        objects: [...offsetOldElements, ...newElementObjs],
++        opacity: 1,
++        visible: true,
++        x: 0,
++        y: 0,
++        draworder: "topdown",
++      },
++    ],
++    nextlayerid: 5,
++    nextobjectid: nextObjId,
++  };
++}
++
++/**
++ * Update world.json to include new regions, elements, and main area points
++ * created by the expansion. This ensures the runtime WorldManager can discover
++ * the new locations and objects after reload.
++ */
++function updateWorldJson(worldDir, finalTMJ, oldTMJ, dir, tileSize) {
++  // Rebuild merged grid from finalTMJ collision layer for walkable point search
++  const collisionData = finalTMJ.layers?.find((l) => l.name === "collision")?.data || [];
++  const mergedGrid = [];
++  for (let y = 0; y < finalTMJ.height; y++) {
++    const row = [];
++    for (let x = 0; x < finalTMJ.width; x++) {
++      row.push(collisionData[y * finalTMJ.width + x] ?? 1);
++    }
++    mergedGrid.push(row);
++  }
++  const worldJsonPath = path.join(worldDir, "world.json");
++  if (!fs.existsSync(worldJsonPath)) {
++    console.warn("[expand-map] world.json not found, skipping update");
++    return;
++  }
++
++  let worldConfig;
++  try {
++    worldConfig = JSON.parse(fs.readFileSync(worldJsonPath, "utf-8"));
++  } catch (e) {
++    console.warn(`[expand-map] Failed to parse world.json: ${e.message}`);
++    return;
++  }
++
++  // Determine the max existing object id in old TMJ to identify new objects
++  const oldMaxObjId = Math.max(
++    0,
++    ...[
++      ...(oldTMJ.layers?.find((l) => l.name === "regions")?.objects || []),
++      ...(oldTMJ.layers?.find((l) => l.name === "interactive_objects")?.objects || []),
++    ].map((o) => o.id || 0),
++  );
++
++  // Find new region objects in the final TMJ (id > oldMaxObjId)
++  const regionsLayer = finalTMJ.layers?.find((l) => l.name === "regions");
++  const interactiveLayer = finalTMJ.layers?.find((l) => l.name === "interactive_objects");
++
++  const newRegionObjs = (regionsLayer?.objects || []).filter((o) => (o.id || 0) > oldMaxObjId);
++  const newElementObjs = (interactiveLayer?.objects || []).filter((o) => (o.id || 0) > oldMaxObjId);
++
++  // Ensure arrays exist
++  if (!worldConfig.locations) worldConfig.locations = [];
++  if (!worldConfig.mainAreaPoints) worldConfig.mainAreaPoints = [];
++  const existingLocationIds = new Set(worldConfig.locations.map((l) => l.id));
++  const existingPointIds = new Set(worldConfig.mainAreaPoints.map((p) => p.id));
++
++  const timestamp = Date.now();
++  const newLocations = [];
++  const newMainAreaPoints = [];
++
++  // Create LocationConfig for each new region
++  for (const regionObj of newRegionObjs) {
++    const props = {};
++    for (const p of regionObj.properties || []) {
++      props[p.name] = p.value;
++    }
++    const regionId = props.id || `expand_${dir}_${timestamp}_loc_${regionObj.id}`;
++    const locationId = `loc_${regionId.replace(/[^a-zA-Z0-9_]/g, "_")}`;
++
++    if (existingLocationIds.has(locationId)) continue;
++
++    // Find walkable tile in this region for main area point
++    const regionGridX = Math.floor(regionObj.x / tileSize);
++    const regionGridY = Math.floor(regionObj.y / tileSize);
++    const regionGridW = Math.ceil(regionObj.width / tileSize);
++    const regionGridH = Math.ceil(regionObj.height / tileSize);
++
++    let walkableGridX = -1, walkableGridY = -1;
++    for (let gy = regionGridY; gy < regionGridY + regionGridH && gy < mergedGrid.length; gy++) {
++      for (let gx = regionGridX; gx < regionGridX + regionGridW && gx < (mergedGrid[gy]?.length || 0); gx++) {
++        if (mergedGrid[gy]?.[gx] === 0) {
++          walkableGridX = gx;
++          walkableGridY = gy;
++          break;
++        }
++      }
++      if (walkableGridX >= 0) break;
++    }
++
++    // Create main area point at walkable tile center (or region center if no walkable found)
++    const pointX = walkableGridX >= 0
++      ? (walkableGridX + 0.5) * tileSize
++      : regionObj.x + regionObj.width / 2;
++    const pointY = walkableGridY >= 0
++      ? (walkableGridY + 0.5) * tileSize
++      : regionObj.y + regionObj.height / 2;
++    const pointId = `map_expand_${dir}_${regionObj.id}`;
++    if (!existingPointIds.has(pointId)) {
++      newMainAreaPoints.push({
++        id: pointId,
++        name: regionObj.name || regionId,
++        x: Math.round(pointX),
++        y: Math.round(pointY),
++        adjacentPointIds: [], // Will be rebuilt by WorldManager.rebuildMainAreaPointAdjacencyFromTmj
++      });
++      existingPointIds.add(pointId);
++    }
++
++    // Parse interactions from elements that belong to this region (spatial containment)
++    const regionObjects = [];
++    for (const elemObj of newElementObjs) {
++      const elemCx = elemObj.x + elemObj.width / 2;
++      const elemCy = elemObj.y + elemObj.height / 2;
++      if (elemCx >= regionObj.x && elemCx <= regionObj.x + regionObj.width &&
++          elemCy >= regionObj.y && elemCy <= regionObj.y + regionObj.height) {
++        const elemProps = {};
++        for (const p of elemObj.properties || []) {
++          elemProps[p.name] = p.value;
++        }
++        const elemId = elemProps.objectId || `expand_${dir}_obj_${elemObj.id}`;
++        regionObjects.push({
++          id: elemId,
++          name: elemObj.name || elemId,
++          locationId,
++          defaultState: "idle",
++          capacity: 1,
++          interactions: [
++            { id: "interact", name: "交互", availableWhenState: "idle", duration: 1 },
++          ],
++        });
++      }
++    }
++
++    // Determine adjacent locations based on direction
++    const adjacentLocations = [];
++    // Connect to existing locations (the expansion connects to the old map)
++    for (const oldLoc of worldConfig.locations) {
++      adjacentLocations.push(oldLoc.id);
++    }
++
++    newLocations.push({
++      id: locationId,
++      name: regionObj.name || regionId,
++      description: props.description || `扩展区域 (${dir})`,
++      adjacentLocations,
++      mainAreaPointId: pointId,
++      objects: regionObjects,
++    });
++    existingLocationIds.add(locationId);
++  }
++
++  // Append new locations and main area points
++  worldConfig.locations = [...(worldConfig.locations || []), ...newLocations];
++  worldConfig.mainAreaPoints = [...(worldConfig.mainAreaPoints || []), ...newMainAreaPoints];
++
++  // Update world size
++  worldConfig.worldSize = {
++    width: finalTMJ.width * tileSize,
++    height: finalTMJ.height * tileSize,
++    tileSize,
++    gridWidth: finalTMJ.width,
++    gridHeight: finalTMJ.height,
++  };
++
++  // Write back
++  try {
++    fs.writeFileSync(worldJsonPath, JSON.stringify(worldConfig, null, 2));
++    console.log(`[expand-map] world.json updated: +${newLocations.length} locations, +${newMainAreaPoints.length} main area points`);
++  } catch (e) {
++    console.warn(`[expand-map] Failed to write world.json: ${e.message}`);
++  }
++}
++
++// ─── Main Pipeline ──────────────────────────────────────────────────────────
++
++async function main() {
++  // ── Validation ──
++  logStep(1, `开始地图扩展: 方向=${direction}, worldDir=${worldDir}`);
++
++  if (!fs.existsSync(mapDir)) throw new Error(`Map directory not found: ${mapDir}`);
++  if (!fs.existsSync(backgroundPath)) throw new Error(`Background image not found: ${backgroundPath}`);
++  if (!fs.existsSync(tmjPath)) throw new Error(`TMJ file not found: ${tmjPath}`);
++
++  // ── Read existing assets ──
++  const oldBuffer = fs.readFileSync(backgroundPath);
++  const oldMeta = await sharp(oldBuffer).metadata();
++  const oldWidth = oldMeta.width;
++  const oldHeight = oldMeta.height;
++  const oldTMJ = readTMJ();
++  const tileSize = oldTMJ.tilewidth || 16;
++  const worldDesign = readWorldDesign();
++
++  logStep(1, `原图尺寸: ${oldWidth}x${oldHeight}, tileSize=${tileSize}, 网格=${oldTMJ.width}x${oldTMJ.height}`);
++
++  // Verify dimensions are tile-aligned
++  if (oldWidth % tileSize !== 0 || oldHeight % tileSize !== 0) {
++    console.warn(`[expand-map] Warning: original dimensions not tile-aligned (${oldWidth}x${oldHeight} / tileSize=${tileSize})`);
++  }
++
++  // Create expand working directory for intermediate artifacts
++  const expandDir = path.join(mapDir, `expand-${direction}-${Date.now()}`);
++  fs.mkdirSync(expandDir, { recursive: true });
++  const saveExpand = (filename, data) => {
++    const p = path.join(expandDir, filename);
++    if (Buffer.isBuffer(data)) fs.writeFileSync(p, data);
++    else fs.writeFileSync(p, typeof data === "string" ? data : JSON.stringify(data, null, 2));
++    return p;
++  };
++
++  // ── Step 1: LLM designs new region content ──
++  logStep(1, "推理模型设计新区域内容...");
++
++  const directionText = getDirectionText(direction);
++  const mapDescription = worldDesign?.mapDescription || "a top-down fantasy map";
++  const worldDescription = worldDesign?.worldDescription || worldDesign?.worldSocialContext || "";
++
++  const existingRegionsList = (worldDesign?.regions || [])
++    .map((r) => `- ${r.id}: ${r.name} (${r.type}, ${r.enterable ? "可进入" : "景观"}) - ${r.description}`)
++    .join("\n") || "（无）";
++
++  const existingElementsList = (worldDesign?.interactiveElements || [])
++    .map((e) => `- ${e.id}: ${e.name} - ${e.description}`)
++    .join("\n") || "（无）";
++
++  const designPrompt = loadPrompt("expand-design-region.md", {
++    direction,
++    directionText,
++    mapDescription,
++    worldDescription: worldDescription || "与现有地图风格保持一致",
++    existingRegions: existingRegionsList,
++    existingElements: existingElementsList,
++  });
++
++  let newDesign;
++  try {
++    newDesign = await chatJSON(
++      [{ role: "user", content: designPrompt }],
++      {
++        temperature: 0.4,
++        logStep: "expand-design",
++        requestTimeoutMs: 90000,
++      },
++    );
++  } catch (err) {
++    console.warn(`[expand-map] LLM design failed (${err.message}), using fallback design`);
++    // Fallback: simple generic design
++    newDesign = {
++      regions: [
++        {
++          id: `new_${direction}_area`,
++          name: `${directionText}新区域`,
++          description: "新扩展的区域，包含道路和自然景观",
++          type: "outdoor",
++          enterable: false,
++          placementHint: "新区域中央",
++          visualDescription: "与现有地图风格一致的户外区域，有道路连接",
++          interactions: [],
++        },
++      ],
++      interactiveElements: [
++        {
++          id: `resource_${direction}_1`,
++          name: "资源采集点",
++          description: "可以采集资源的地点",
++          placementHint: "靠近连接道路",
++          visualDescription: "显眼的资源物体，与地图风格一致",
++          interactions: [
++            { id: "collect", name: "采集", description: "采集资源", effects: [{ type: "character_need", target: "resources", value: 1 }] },
++          ],
++        },
++      ],
++      boundaryConnection: {
++        terrainAtBoundary: "道路和地形自然延伸",
++        continuingElements: "道路延续",
++        styleNotes: "保持一致的绘画风格",
++      },
++    };
++  }
++
++  saveExpand("01-new-design.json", newDesign);
++  logStep(1, `设计完成: ${(newDesign.regions || []).length}个新区域, ${(newDesign.interactiveElements || []).length}个新元素`);
++
++  // Create a mini worldDesign for the new region (for annotation steps)
++  const newRegionWorldDesign = normalizeWorldDesign({
++    mapDescription: `${mapDescription} - ${directionText}扩展区域`,
++    worldDescription: worldDescription,
++    regions: newDesign.regions || [],
++    interactiveElements: newDesign.interactiveElements || [],
++    worldActions: [],
++    mapPlan: {},
++  });
++
++  // ── Step 2: Generate new region image (outpainting with review) ──
++  logStep(2, "生成扩展区域图像...");
++
++  const MAX_RETRIES = parseInt(process.env.EXPAND_MAX_RETRIES || process.env.MAX_RETRIES || "3", 10);
++  const GENERATE_TIMEOUT_MS = parseInt(process.env.EXPAND_GENERATE_TIMEOUT_MS || "240000", 10);
++  const REVIEW_TIMEOUT_MS = parseInt(process.env.EXPAND_REVIEW_TIMEOUT_MS || "120000", 10);
++
++  // Edge strip size (12% of dimension, minimum 2 tiles)
++  const isHorizontal = direction === "east" || direction === "west";
++  const edgeDimension = isHorizontal ? oldWidth : oldHeight;
++  const edgeStripSize = Math.max(tileSize * 3, Math.round(edgeDimension * 0.12));
++
++  // Extract edge strip and build seed canvas
++  logStep(2, `提取边缘条带 (${edgeStripSize}px) 并构建生成画布...`);
++  const edgeStripBuffer = await extractEdgeStrip(oldBuffer, oldWidth, oldHeight, direction, edgeStripSize);
++  saveExpand("02-edge-strip.png", edgeStripBuffer);
++
++  const seedCanvas = await buildSeedCanvas(edgeStripBuffer, oldWidth, oldHeight, direction, edgeStripSize);
++  saveExpand("02-seed-canvas.png", seedCanvas);
++
++  const newRegionSummary = formatRegionSummary(newRegionWorldDesign);
++  const newElementSummary = formatElementSummary(newRegionWorldDesign);
++  const boundaryNotes = newDesign.boundaryConnection
++    ? `边界地形：${newDesign.boundaryConnection.terrainAtBoundary || "自然延续"}\n延续元素：${newDesign.boundaryConnection.continuingElements || "道路、地形自然延伸"}\n风格要点：${newDesign.boundaryConnection.styleNotes || "保持完全一致"}`
++    : "边界处道路、地形必须自然衔接，不能断裂";
++
++  // Direction-specific prompt variables
++  const directionPromptVars = {
++    east:  { edgePositionDesc: "左侧", newAreaDesc: "右侧", outerEdgeDesc: "最右侧边缘", adjacentEdge: "左侧边缘" },
++    west:  { edgePositionDesc: "右侧", newAreaDesc: "左侧", outerEdgeDesc: "最左侧边缘", adjacentEdge: "右侧边缘" },
++    south: { edgePositionDesc: "上方", newAreaDesc: "下方", outerEdgeDesc: "最下方边缘", adjacentEdge: "上方边缘" },
++    north: { edgePositionDesc: "下方", newAreaDesc: "上方", outerEdgeDesc: "最上方边缘", adjacentEdge: "下方边缘" },
++  }[direction];
++
++  let newRegionBuffer = null;
++  let reviewPassed = false;
++  let attempts = 0;
++  let additionalConstraints = "";
++
++  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
++    attempts = attempt;
++    logStep(2, `生成新区域图像 (尝试 ${attempt}/${MAX_RETRIES + 1})...`);
++
++    const genPrompt = loadPrompt("expand-map-generation.md", {
++      directionText,
++      mapDescription,
++      worldDescription: worldDescription || "与原图风格一致",
++      newRegionSummary,
++      newElementSummary,
++      boundaryNotes,
++      edgePositionDesc: directionPromptVars.edgePositionDesc,
++      newAreaDesc: directionPromptVars.newAreaDesc,
++      outerEdgeDesc: directionPromptVars.outerEdgeDesc,
++      additionalConstraints,
++    });
++
++    try {
++      // Use editImage on the seed canvas - model will fill in the new area
++      newRegionBuffer = await editImage(genPrompt, seedCanvas, {
++        imageSize: getMapImageSizeLabel(),
++        logStep: `expand-gen-${direction}-a${attempt}`,
++        requestTimeoutMs: GENERATE_TIMEOUT_MS,
++      });
++
++      // Ensure exact dimensions
++      const genMeta = await sharp(newRegionBuffer).metadata();
++      if (genMeta.width !== oldWidth || genMeta.height !== oldHeight) {
++        logStep(2, `调整生成图像尺寸: ${genMeta.width}x${genMeta.height} -> ${oldWidth}x${oldHeight}`);
++        newRegionBuffer = await sharp(newRegionBuffer)
++          .resize(oldWidth, oldHeight, { fit: "fill" })
++          .png()
++          .toBuffer();
++      }
++
++      saveExpand(`02-new-region-attempt-${attempt}.png`, newRegionBuffer);
++      logStep(2, `新区域图像已生成: ${newRegionBuffer.length} bytes`);
++
++      // Multimodal review
++      logStep(2, `审查新区域图像 (尝试 ${attempt}/${MAX_RETRIES + 1})...`);
++      const { buffer: smallOld } = await resizeImage(oldBuffer, 1024);
++      const { buffer: smallNew } = await resizeImage(newRegionBuffer, 1024);
++
++      const reviewPrompt = loadPrompt("expand-map-review.md", {
++        mapDescription,
++        directionText,
++        adjacentEdge: directionPromptVars.adjacentEdge,
++      });
++
++      let review;
++      try {
++        review = await geminiProVisionJSON(reviewPrompt, [smallOld, smallNew], {
++          logStep: `expand-review-${direction}-a${attempt}`,
++          requestTimeoutMs: REVIEW_TIMEOUT_MS,
++        });
++      } catch (e) {
++        console.warn(`[expand-map] Review failed on attempt ${attempt}: ${e.message}`);
++        review = { pass: false, issues: [`Review failed: ${e.message}`], promptAdjustments: [], boundaryScore: 5, styleScore: 5 };
++      }
++
++      logStep(2, `审查结果: pass=${review.pass}, boundary=${review.boundaryScore}/10, style=${review.styleScore}/10`);
++
++      if (review.pass && (review.boundaryScore ?? 7) >= 6 && (review.styleScore ?? 7) >= 6) {
++        logStep(2, `新区域图像通过审查 (尝试 ${attempt})`);
++        reviewPassed = true;
++        break;
++      }
++
++      if (attempt <= MAX_RETRIES && review.promptAdjustments?.length) {
++        additionalConstraints += `\n## 第${attempt}次审查反馈\n${review.promptAdjustments.join("\n")}\n边界衔接分数: ${review.boundaryScore}/10, 风格一致性分数: ${review.styleScore}/10\n问题: ${(review.issues || []).join("; ")}`;
++      }
++    } catch (err) {
++      console.warn(`[expand-map] Generation attempt ${attempt} failed: ${err.message}`);
++      if (attempt > MAX_RETRIES) throw err;
++    }
++  }
++
++  if (!newRegionBuffer) {
++    throw new Error("Failed to generate new region after all retries");
++  }
++
++  if (!reviewPassed) {
++    console.warn(`[expand-map] Review never passed after ${attempts} attempts, using best effort result`);
++  }
++
++  // ── Step 3: Blend seam + Compress ──
++  logStep(3, "边界融合处理与图像压缩...");
++  newRegionBuffer = await blendSeam(oldBuffer, newRegionBuffer, oldWidth, oldHeight, direction, tileSize);
++  saveExpand("03-new-region-blended.png", newRegionBuffer);
++
++  const {
++    compressedMap: compressedNewRegion,
++    width: compNewWidth,
++    height: compNewHeight,
++  } = await compressMap(newRegionBuffer);
++  saveExpand("03-compressed-new-region.png", compressedNewRegion);
++  logStep(3, `压缩完成: ${compNewWidth}x${compNewHeight}`);
++
++  // ── Step 4: Annotate regions, elements, walkable areas (parallel) ──
++  logStep(4, "并行执行：功能区标注 + 元素标注 + 可行走区域标注...");
++
++  const newRegionUserPrompt = `${mapDescription} - ${directionText}扩展区域`;
++
++  const [regionResult, elementResult, walkableResult] = await Promise.all([
++    resolveDesignedRegions(compressedNewRegion, newRegionWorldDesign, newRegionUserPrompt, saveExpand),
++    locateElements(compressedNewRegion, newRegionWorldDesign, newRegionUserPrompt, saveExpand),
++    generateWalkableMap(compressedNewRegion, newRegionUserPrompt, newRegionWorldDesign, saveExpand),
++  ]);
++
++  saveExpand("04-new-regions.json", regionResult.regions);
++  saveExpand("04-new-elements.json", elementResult.elements);
++
++  logStep(4, `标注完成: ${regionResult.regions.length}个区域, ${elementResult.elements.length}个元素, 可行走区域review=${walkableResult.reviewPassed}`);
++
++  // Scale coordinates from compressed to original resolution
++  const scaledNewRegions = scaleRegions(regionResult.regions, oldWidth, compNewWidth);
++  const scaledNewElements = scaleElements(elementResult.elements, oldWidth, compNewWidth);
++
++  // ── Step 5: Compute walkable grid for new region ──
++  logStep(5, "计算新区域可行走网格...");
++  const {
++    grid: newGrid,
++    gridWidth: newGridW,
++    gridHeight: newGridH,
++  } = await computeGrid(compressedNewRegion, walkableResult.buffer, oldWidth);
++  saveExpand("05-new-grid.json", { gridWidth: newGridW, gridHeight: newGridH, grid: newGrid });
++  logStep(5, `新区域网格: ${newGridW}x${newGridH}`);
++
++  // ── Step 6: Stitch images, merge TMJ, save results ──
++  logStep(6, "拼接地图、合并数据并保存...");
++
++  // Target background dimensions (must be tile-aligned like the main pipeline Step 6)
++  const oldBgWidth = oldTMJ.width * tileSize;
++  const oldBgHeight = oldTMJ.height * tileSize;
++  const newRegionBgWidth = newGridW * tileSize;
++  const newRegionBgHeight = newGridH * tileSize;
++
++  // Resize buffers to tile-aligned dimensions for stitching
++  const oldBufferForStitch = (oldBgWidth !== oldWidth || oldBgHeight !== oldHeight)
++    ? await sharp(oldBuffer)
++        .resize(oldBgWidth, oldBgHeight, { fit: "fill" })
++        .png()
++        .toBuffer()
++    : oldBuffer;
++  const newRegionForStitch = (newRegionBgWidth !== oldWidth || newRegionBgHeight !== oldHeight)
++    ? await sharp(newRegionBuffer)
++        .resize(newRegionBgWidth, newRegionBgHeight, { fit: "fill" })
++        .png()
++        .toBuffer()
++    : newRegionBuffer;
++
++  // Stitch images
++  const stitchedBuffer = await stitchMaps(oldBufferForStitch, newRegionForStitch, oldBgWidth, oldBgHeight, direction);
++  const stitchedMeta = await sharp(stitchedBuffer).metadata();
++
++  // Scale new regions/elements coordinates from original generated resolution to tile-aligned background resolution
++  const scaleCoords = (obj, fromW, fromH, toW, toH) => ({
++    ...obj,
++    topLeft: {
++      x: Math.round(obj.topLeft.x * (toW / fromW)),
++      y: Math.round(obj.topLeft.y * (toH / fromH)),
++    },
++    bottomRight: {
++      x: Math.round(obj.bottomRight.x * (toW / fromW)),
++      y: Math.round(obj.bottomRight.y * (toH / fromH)),
++    },
++  });
++
++  // scaledNewRegions/Elements are at oldWidth/oldHeight (generated image resolution).
++  // Rescale to newRegionBgWidth/newRegionBgHeight (tile-aligned background resolution).
++  const finalNewRegions = scaledNewRegions.map((r) =>
++    scaleCoords(r, oldWidth, oldHeight, newRegionBgWidth, newRegionBgHeight)
++  );
++  const finalNewElements = scaledNewElements.map((e) =>
++    scaleCoords(e, oldWidth, oldHeight, newRegionBgWidth, newRegionBgHeight)
++  );
++
++  // Note: old TMJ objects already have coordinates in oldBgWidth x oldBgHeight space
++  // (since the TMJ was built for the existing 06-background.png), so no rescaling needed.
++
++  // Build combined TMJ with correctly scaled coordinates and proper offsets
++  const finalTMJ = buildCombinedTMJ(
++    oldTMJ,
++    {
++      newGrid,
++      newRegions: finalNewRegions,
++      newElements: finalNewElements,
++    },
++    direction,
++    tileSize,
++    oldBgWidth,
++    oldBgHeight,
++    newRegionBgWidth,
++    newRegionBgHeight,
++  );
++
++  // ── Save results (part of Step 6) ──
++
++  // Backup old files
++  const backupBg = path.join(mapDir, `06-background.bak-${Date.now()}.png`);
++  const backupTmj = path.join(mapDir, `06-final.bak-${Date.now()}.tmj`);
++  fs.copyFileSync(backgroundPath, backupBg);
++  fs.copyFileSync(tmjPath, backupTmj);
++
++  // Write new files
++  fs.writeFileSync(backgroundPath, stitchedBuffer);
++  writeTMJ(finalTMJ);
++
++  // Update world.json to include new regions, elements, and main area points
++  updateWorldJson(worldDir, finalTMJ, oldTMJ, direction, tileSize);
++
++  // Update world-design.json to include new regions/elements
++  if (worldDesign && fs.existsSync(worldDesignPath)) {
++    try {
++      const updatedDesign = JSON.parse(fs.readFileSync(worldDesignPath, "utf-8"));
++      const timestamp = Date.now();
++      const newRegionsWithIds = (newDesign.regions || []).map((r, i) => ({
++        ...r,
++        id: r.id || `expand_${direction}_${timestamp}_r${i}`,
++      }));
++      const newElementsWithIds = (newDesign.interactiveElements || []).map((e, i) => ({
++        ...e,
++        id: e.id || `expand_${direction}_${timestamp}_e${i}`,
++      }));
++      updatedDesign.regions = [...(updatedDesign.regions || []), ...newRegionsWithIds];
++      updatedDesign.interactiveElements = [...(updatedDesign.interactiveElements || []), ...newElementsWithIds];
++      fs.writeFileSync(worldDesignPath, JSON.stringify(updatedDesign, null, 2));
++    } catch (e) {
++      console.warn(`[expand-map] Failed to update world-design.json: ${e.message}`);
++    }
++  }
++
++  // Update metadata
++  const metadataPath = path.join(mapDir, "metadata.json");
++  if (fs.existsSync(metadataPath)) {
++    try {
++      const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf-8"));
++      if (!metadata.expansions) metadata.expansions = [];
++      metadata.expansions.push({
++        direction,
++        timestamp: new Date().toISOString(),
++        previousSize: { width: oldBgWidth, height: oldBgHeight },
++        newSize: { width: stitchedMeta.width, height: stitchedMeta.height },
++        previousGrid: { width: oldTMJ.width, height: oldTMJ.height },
++        newGrid: { width: finalTMJ.width, height: finalTMJ.height },
++        newRegions: regionResult.regions.length,
++        newElements: elementResult.elements.length,
++        reviewPassed,
++        attempts,
++        expandDir: path.basename(expandDir),
++      });
++      metadata.completedAt = new Date().toISOString();
++      fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
++    } catch (e) {
++      console.warn("[expand-map] Failed to update metadata:", e.message);
++    }
++  }
++
++  // Also save stitched preview in expand dir
++  saveExpand("06-stitched-final.png", stitchedBuffer);
++  saveExpand("06-final.tmj", finalTMJ);
++
++  logStep(6, `地图扩展完成! 新尺寸: ${stitchedMeta.width}x${stitchedMeta.height}, 网格: ${finalTMJ.width}x${finalTMJ.height}`);
++  logStep(6, `新增区域: ${regionResult.regions.length}个, 新增元素: ${elementResult.elements.length}个`);
++
++  console.log(JSON.stringify({
++    ok: true,
++    direction,
++    newWidth: stitchedMeta.width,
++    newHeight: stitchedMeta.height,
++    newGridWidth: finalTMJ.width,
++    newGridHeight: finalTMJ.height,
++    newRegions: regionResult.regions.length,
++    newElements: elementResult.elements.length,
++    reviewPassed,
++    attempts,
++  }));
++}
++
++main().catch((err) => {
++  console.error("[expand-map] Failed:", err);
++  console.log(JSON.stringify({ ok: false, error: err.message || String(err) }));
++  process.exit(1);
++});
+\ No newline at end of file
+diff --git a/server/src/core/character-manager.ts b/server/src/core/character-manager.ts
+index dbe8332..089ee75 100644
+--- a/server/src/core/character-manager.ts
++++ b/server/src/core/character-manager.ts
+@@ -107,6 +107,74 @@ export class CharacterManager {
+     return Array.from(this.profiles.values());
+   }
+ 
++  /**
++   * 动态添加新角色到运行时。
++   * 会同时注册 profile 并初始化 state。
++   */
++  addCharacter(profile: CharacterProfile, initialState?: Partial<CharacterState>): CharacterProfile {
++    if (this.profiles.has(profile.id)) {
++      throw new Error(`Character already exists: ${profile.id}`);
++    }
++
++    this.profiles.set(profile.id, profile);
++
++    // 构建初始 state
++    const occupiedPointIds = new Set<string>();
++    for (const s of charStateStore.getAllCharacterStates()) {
++      if (s.mainAreaPointId) occupiedPointIds.add(s.mainAreaPointId);
++    }
++
++    const spawnSeedSalt = `dyn:${Date.now().toString(36)}`;
++    const baseState = buildInitialCharacterState(
++      profile,
++      this.worldManager,
++      occupiedPointIds,
++      spawnSeedSalt,
++    );
++
++    const finalState: CharacterState = {
++      ...baseState,
++      ...(initialState ?? {}),
++    };
++
++    charStateStore.initCharacterState(finalState);
++
++    // 初始化记忆（如果有初始记忆）
++    for (const initMem of profile.initialMemories) {
++      this.memoryManager.addMemory({
++        characterId: profile.id,
++        type: initMem.type,
++        content: initMem.content,
++        gameTime: { day: 1, tick: 0 },
++        importance: initMem.importance,
++        emotionalValence: initMem.emotionalValence,
++        emotionalIntensity: initMem.emotionalIntensity,
++        relatedCharacters: initMem.relatedCharacters,
++        relatedLocation: initMem.relatedLocation,
++        relatedObjects: initMem.relatedObjects,
++        tags: initMem.tags,
++      });
++    }
++
++    if (profile.backstory) {
++      this.memoryManager.addMemory({
++        characterId: profile.id,
++        type: "experience",
++        content: profile.backstory,
++        gameTime: { day: 1, tick: 0 },
++        importance: 8,
++        emotionalValence: 0,
++        emotionalIntensity: 3,
++        relatedCharacters: [],
++        relatedLocation: profile.startPosition,
++        relatedObjects: [],
++        tags: ["backstory"],
++      });
++    }
++
++    return profile;
++  }
++
+   /** Editable subset of CharacterProfile fields. */
+   static readonly EDITABLE_FIELDS = [
+     "coreMotivation", "coreValues", "speakingStyle",
+diff --git a/server/src/core/map-expander.ts b/server/src/core/map-expander.ts
+new file mode 100644
+index 0000000..6eb259f
+--- /dev/null
++++ b/server/src/core/map-expander.ts
+@@ -0,0 +1,203 @@
++import { spawn } from "node:child_process";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
++import type { BuildJobStatus } from "../types/build.js";
++import type { WorldManager } from "./world-manager.js";
++import type { ResourceManager } from "./resource-manager.js";
++
++const __filename = fileURLToPath(import.meta.url);
++const __dirname = path.dirname(__filename);
++const SERVER_ROOT = path.resolve(__dirname, "../..");
++const EXPAND_SCRIPT = path.resolve(SERVER_ROOT, "../generators/map/src/expand-map.mjs");
++
++const TOTAL_STEPS = 6;
++
++type ExpandDirection = "north" | "south" | "east" | "west";
++
++interface ExpandJob extends BuildJobStatus {
++  direction: ExpandDirection;
++  worldDir: string;
++}
++
++export class MapExpander {
++  private jobs = new Map<string, ExpandJob>();
++
++  constructor(
++    private worldManager: WorldManager,
++    private getWorldDir: () => string | undefined,
++    private resourceManager?: ResourceManager,
++  ) {}
++
++  /**
++   * 启动一个地图扩展任务。
++   * 返回 jobId，可用于轮询进度。
++   */
++  startExpandJob(direction: ExpandDirection): { jobId: string } {
++    const worldDir = this.getWorldDir();
++    if (!worldDir) {
++      throw new Error("No active world");
++    }
++
++    const jobId = `map_expand_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
++    const job: ExpandJob = {
++      jobId,
++      status: "running",
++      progress: 10,
++      message: `地图扩展任务已加入队列（方向: ${direction}）`,
++      createdAt: Date.now(),
++      direction,
++      worldDir,
++    };
++    this.jobs.set(jobId, job);
++
++    // 异步启动扩展流程
++    this.runExpandJob(jobId, direction, worldDir).catch((err) => {
++      console.error(`[MapExpander] Job ${jobId} failed:`, err);
++      const j = this.jobs.get(jobId);
++      if (j && j.status === "running") {
++        j.status = "error";
++        j.error = err instanceof Error ? err.message : String(err);
++        j.finishedAt = Date.now();
++      }
++    });
++
++    return { jobId };
++  }
++
++  /**
++   * 查询任务状态。
++   */
++  getJobStatus(jobId: string): BuildJobStatus | null {
++    const job = this.jobs.get(jobId);
++    if (!job) return null;
++    // 返回时去掉内部字段
++    const { direction: _direction, worldDir: _worldDir, ...status } = job;
++    void _direction;
++    void _worldDir;
++    return status as BuildJobStatus;
++  }
++
++  private async runExpandJob(
++    jobId: string,
++    direction: ExpandDirection,
++    worldDir: string,
++  ): Promise<void> {
++    const job = this.jobs.get(jobId);
++    if (!job) return;
++
++    job.progress = 10;
++    job.message = "准备地图扩展...";
++
++    const args: string[] = [
++      EXPAND_SCRIPT,
++      "--worldDir",
++      worldDir,
++      "--direction",
++      direction,
++    ];
++
++    const child = spawn(process.execPath, args, {
++      stdio: ["ignore", "pipe", "pipe"],
++      env: {
++        ...process.env,
++      },
++    });
++
++    let stdoutBuffer = "";
++    let stderrBuffer = "";
++
++    child.stdout.on("data", (chunk: Buffer) => {
++      const text = chunk.toString("utf-8");
++      stdoutBuffer += text;
++      process.stdout.write(text);
++
++      // 解析步骤进度
++      // 格式: [Step N] message
++      const stepMatch = text.match(/\[Step (\d+)\]\s+(.+)/);
++      if (stepMatch) {
++        const stepNum = parseInt(stepMatch[1], 10);
++        const stepMsg = stepMatch[2].trim();
++        // 进度映射: Step1=10% (设计), Step2=30% (图像生成), Step3=55% (压缩+融合),
++        //           Step4=70% (标注), Step5=85% (网格计算), Step6=100% (拼接保存)
++        const progressMap: Record<number, number> = {
++          1: 10,
++          2: 30,
++          3: 55,
++          4: 70,
++          5: 85,
++          6: 100,
++        };
++        const progress = progressMap[stepNum] ?? 50;
++        const j = this.jobs.get(jobId);
++        if (j) {
++          j.progress = Math.max(j.progress, progress);
++          j.message = stepMsg;
++        }
++      }
++    });
++
++    child.stderr.on("data", (chunk: Buffer) => {
++      const text = chunk.toString("utf-8");
++      stderrBuffer += text;
++      process.stderr.write(text);
++    });
++
++    await new Promise<void>((resolve, reject) => {
++      child.on("close", (code) => {
++        if (code === 0) {
++          resolve();
++        } else {
++          // Try to extract error from last JSON line
++          const errorMatch = stdoutBuffer.match(/"ok":\s*false.*?"error":\s*"([^"]+)"/);
++          const errorMsg = errorMatch
++            ? errorMatch[1]
++            : stderrBuffer.trim() || `Expand script exited with code ${code}`;
++          reject(new Error(errorMsg));
++        }
++      });
++      child.on("error", reject);
++    });
++
++    // 扩展完成：通知 WorldManager 重新加载地图数据（碰撞网格、世界尺寸、区域、主区域点）
++    try {
++      this.worldManager.reloadAfterExpansion();
++    } catch (err) {
++      console.warn(`[MapExpander] Failed to reload world manager: ${err}`);
++    }
++
++    // 重新发现资源点（新区域可能包含新的资源采集点）
++    if (this.resourceManager) {
++      try {
++        this.resourceManager.rediscoverAfterExpansion();
++      } catch (err) {
++        console.warn(`[MapExpander] Failed to rediscover resource nodes: ${err}`);
++      }
++    }
++
++    // 解析最终结果获取详细信息
++    let newGridWidth = 0, newGridHeight = 0, newRegions = 0, newElements = 0;
++    const resultMatch = stdoutBuffer.match(/\{[^{}"']*"ok"\s*:\s*true[^{}]*\}/);
++    if (resultMatch) {
++      try {
++        const result = JSON.parse(resultMatch[0]);
++        newGridWidth = result.newGridWidth || 0;
++        newGridHeight = result.newGridHeight || 0;
++        newRegions = result.newRegions || 0;
++        newElements = result.newElements || 0;
++      } catch {
++        // ignore parse errors
++      }
++    }
++
++    // 更新 job 状态为完成
++    const j = this.jobs.get(jobId);
++    if (j) {
++      j.status = "done";
++      j.progress = 100;
++      j.message = `地图扩展完成（方向: ${direction}），新网格 ${newGridWidth}x${newGridHeight}，新增 ${newRegions} 个区域、${newElements} 个元素。刷新页面查看新地图。`;
++      j.finishedAt = Date.now();
++    }
++
++    console.log(`[MapExpander] Map expansion to ${direction} complete (job ${jobId})`);
++  }
++}
+diff --git a/server/src/core/resource-manager.ts b/server/src/core/resource-manager.ts
+new file mode 100644
+index 0000000..3b5ad1b
+--- /dev/null
++++ b/server/src/core/resource-manager.ts
+@@ -0,0 +1,330 @@
++import type { WorldManager } from "./world-manager.js";
++import type { ResourceNodeConfig, ResourceResult, BuildCosts } from "../types/build.js";
++import * as worldState from "../store/world-state-store.js";
++import { getWorldDir } from "../utils/config-loader.js";
++import fs from "node:fs";
++import path from "node:path";
++
++const PLAYER_RESOURCES_KEY = "player_resources";
++const DEFAULT_RESOURCE_AMOUNT = 10; // 给玩家一些初始资源以便立即体验
++const DEFAULT_RESOURCE_PER_CLICK = 1;
++const DEFAULT_COOLDOWN_MS = 2000;
++
++/** 默认建造价格配置 */
++export const DEFAULT_BUILD_COSTS: BuildCosts = {
++  character: 20,
++  mapExpand: 50,
++};
++
++// 自动识别为资源点的关键词（中英文）
++const RESOURCE_KEYWORDS = [
++  "矿", "矿石", "水晶", "宝石", "金矿", "银矿", "铁矿",
++  "树", "森林", "木材", "木头", "果树",
++  "泉", "井", "水源", "河流", "湖泊",
++  "药草", "草药", "花丛", "蘑菇",
++  "宝箱", "宝藏", "金币", "财富",
++  "mine", "ore", "crystal", "gem", "gold", "silver", "iron",
++  "tree", "forest", "wood", "lumber",
++  "spring", "well", "water",
++  "herb", "flower", "mushroom",
++  "chest", "treasure", "coin",
++  "statue", "fountain", "forge", "anvil",
++];
++
++export class ResourceManager {
++  private resourceNodes: Map<string, ResourceNodeConfig> = new Map();
++  private cooldowns: Map<string, number> = new Map(); // objectId -> lastCollectTime
++
++  constructor(private worldManager: WorldManager) {}
++
++  initialize(): void {
++    this.discoverResourceNodes();
++    // 确保玩家资源键存在于全局状态中
++    const existing = worldState.getGlobalState(PLAYER_RESOURCES_KEY);
++    if (existing === null) {
++      worldState.setGlobalState(PLAYER_RESOURCES_KEY, String(DEFAULT_RESOURCE_AMOUNT));
++    }
++  }
++
++  /**
++   * Re-discover resource nodes after map expansion.
++   * Clears existing nodes and re-runs the discovery process,
++   * picking up new resource nodes from the expanded map.
++   */
++  rediscoverAfterExpansion(): void {
++    console.log("[ResourceManager] Re-discovering resource nodes after expansion...");
++    this.resourceNodes.clear();
++    this.cooldowns.clear();
++    this.discoverResourceNodes();
++    console.log(`[ResourceManager] Discovered ${this.resourceNodes.size} resource nodes`);
++  }
++
++  /**
++   * 发现资源点：
++   * 1. 先从 location objects 中找 id 以 resource_ 开头的
++   * 2. 再从 TMJ 的 interactive_objects 层中找关键词匹配的
++   * 3. 如果还没有，就从所有 regions 里挑几个自动变成资源点
++   */
++  private discoverResourceNodes(): void {
++    // 方式1：从 location objects 中找显式标记的资源点
++    const locations = this.worldManager.getAllLocations();
++    for (const loc of locations) {
++      for (const obj of loc.objects) {
++        if (!obj.id.startsWith("resource_")) continue;
++        const objRecord = obj as unknown as Record<string, unknown>;
++        const node: ResourceNodeConfig = {
++          id: obj.id,
++          name: obj.name,
++          locationId: obj.locationId || loc.id,
++          pixelX: this.extractNumberFromObject(objRecord, "pixelX", 0),
++          pixelY: this.extractNumberFromObject(objRecord, "pixelY", 0),
++          width: this.extractNumberFromObject(objRecord, "width", 64),
++          height: this.extractNumberFromObject(objRecord, "height", 64),
++          resourcePerClick: this.extractNumberFromObject(objRecord, "resourcePerClick", DEFAULT_RESOURCE_PER_CLICK),
++          cooldownMs: this.extractNumberFromObject(objRecord, "cooldownMs", DEFAULT_COOLDOWN_MS),
++        };
++        this.resourceNodes.set(obj.id, node);
++      }
++    }
++
++    // 方式2：从 TMJ 中读取 interactive_objects，自动识别资源点
++    if (this.resourceNodes.size === 0) {
++      this.discoverFromTMJ();
++    }
++
++    // 方式3：如果还是没有，创建一个默认资源点（在地图中心）
++    if (this.resourceNodes.size === 0) {
++      this.createDefaultResourceNode();
++    }
++  }
++
++  /** 从 TMJ 文件的 interactive_objects 层发现资源点 */
++  private discoverFromTMJ(): void {
++    const worldDir = getWorldDir();
++    if (!worldDir) return;
++
++    const tmjPath = path.join(worldDir, "map", "06-final.tmj");
++    if (!fs.existsSync(tmjPath)) return;
++
++    try {
++      const tmj = JSON.parse(fs.readFileSync(tmjPath, "utf-8"));
++      const tileSize = tmj.tilewidth ?? 8;
++
++      for (const layer of tmj.layers ?? []) {
++        if (layer.type !== "objectgroup") continue;
++        const objects = layer.objects ?? [];
++
++        for (const obj of objects) {
++          const name = (obj.name ?? obj.type ?? "") as string;
++          if (!name) continue;
++
++          // 检查是否匹配资源关键词
++          const lowerName = name.toLowerCase();
++          const isResource = RESOURCE_KEYWORDS.some((kw) =>
++            lowerName.includes(kw.toLowerCase()),
++          );
++
++          if (isResource || layer.name === "interactive_objects") {
++            const nodeId = `resource_${obj.id ?? obj.name?.replace(/\s+/g, "_") ?? Math.random().toString(36).slice(2, 8)}`;
++            // TMJ 坐标是左上角，转成中心点
++            const pixelX = (obj.x ?? 0) + (obj.width ?? 0) / 2;
++            const pixelY = (obj.y ?? 0) + (obj.height ?? 0) / 2;
++
++            const node: ResourceNodeConfig = {
++              id: nodeId,
++              name: `${name}（资源点）`,
++              locationId: this.guessLocationId(name, layer.name),
++              pixelX: Math.round(pixelX),
++              pixelY: Math.round(pixelY),
++              width: Math.round(obj.width ?? 64),
++              height: Math.round(obj.height ?? 64),
++              resourcePerClick: DEFAULT_RESOURCE_PER_CLICK,
++              cooldownMs: DEFAULT_COOLDOWN_MS,
++            };
++
++            if (!this.resourceNodes.has(nodeId)) {
++              this.resourceNodes.set(nodeId, node);
++            }
++          }
++        }
++      }
++
++      // 限制最多 6 个资源点，避免太多
++      if (this.resourceNodes.size > 6) {
++        const entries = Array.from(this.resourceNodes.entries()).slice(0, 6);
++        this.resourceNodes = new Map(entries);
++      }
++    } catch (e) {
++      console.warn("[ResourceManager] Failed to parse TMJ for resource nodes:", e);
++    }
++  }
++
++  /** 根据名字猜测所在区域 */
++  private guessLocationId(objName: string, layerName: string): string {
++    const allLocations = this.worldManager.getAllLocations();
++    if (allLocations.length === 0) return "main_area";
++
++    // 优先匹配名字包含的
++    const lowerName = objName.toLowerCase();
++    for (const loc of allLocations) {
++      if (lowerName.includes(loc.id.toLowerCase()) || lowerName.includes(loc.name.toLowerCase())) {
++        return loc.id;
++      }
++    }
++    return "main_area";
++  }
++
++  /** 创建默认资源点（在主区域中心附近） */
++  private createDefaultResourceNode(): void {
++    const center = this.worldManager.getMainAreaCenterPixel();
++    const node: ResourceNodeConfig = {
++      id: "resource_default_crystal",
++      name: "神秘水晶（资源点）",
++      locationId: "main_area",
++      pixelX: Math.round(center.x + 80),
++      pixelY: Math.round(center.y + 60),
++      width: 64,
++      height: 64,
++      resourcePerClick: DEFAULT_RESOURCE_PER_CLICK,
++      cooldownMs: DEFAULT_COOLDOWN_MS,
++    };
++    this.resourceNodes.set(node.id, node);
++  }
++
++  /** 从 object 的任意属性中提取数字（利用类型断言访问额外字段） */
++  private extractNumberFromObject(
++    obj: Record<string, unknown>,
++    key: string,
++    defaultValue: number,
++  ): number {
++    const val = obj[key];
++    if (typeof val === "number" && Number.isFinite(val)) return val;
++    if (typeof val === "string") {
++      const parsed = Number(val);
++      if (Number.isFinite(parsed)) return parsed;
++    }
++    return defaultValue;
++  }
++
++  /** 获取所有资源点配置 */
++  getAllResourceNodes(): ResourceNodeConfig[] {
++    return Array.from(this.resourceNodes.values());
++  }
++
++  /** 获取指定资源点配置 */
++  getResourceNode(objectId: string): ResourceNodeConfig | undefined {
++    return this.resourceNodes.get(objectId);
++  }
++
++  /** 获取当前资源数量 */
++  getResourceAmount(): number {
++    const raw = worldState.getGlobalState(PLAYER_RESOURCES_KEY);
++    const amount = raw !== null ? Number(raw) : DEFAULT_RESOURCE_AMOUNT;
++    return Number.isFinite(amount) ? amount : DEFAULT_RESOURCE_AMOUNT;
++  }
++
++  /**
++   * 采集资源
++   * @param playerId 玩家 ID（预留，目前单玩家）
++   * @param objectId 资源点 ID
++   */
++  collectResource(playerId: string, objectId: string): ResourceResult {
++    const node = this.resourceNodes.get(objectId);
++    if (!node) {
++      return {
++        success: false,
++        newAmount: this.getResourceAmount(),
++        reason: `Resource node not found: ${objectId}`,
++      };
++    }
++
++    // 检查冷却
++    const now = Date.now();
++    const lastCollect = this.cooldowns.get(objectId) ?? 0;
++    if (now - lastCollect < node.cooldownMs) {
++      return {
++        success: false,
++        newAmount: this.getResourceAmount(),
++        reason: `Resource node is on cooldown. Wait ${node.cooldownMs - (now - lastCollect)}ms`,
++      };
++    }
++
++    // 增加资源
++    const currentAmount = this.getResourceAmount();
++    const newAmount = currentAmount + node.resourcePerClick;
++    worldState.setGlobalState(PLAYER_RESOURCES_KEY, String(newAmount));
++
++    // 更新冷却时间
++    this.cooldowns.set(objectId, now);
++
++    return {
++      success: true,
++      newAmount,
++    };
++  }
++
++  /**
++   * 消费资源
++   * @param amount 消耗数量
++   */
++  spendResources(amount: number): ResourceResult {
++    if (amount < 0) {
++      return {
++        success: false,
++        newAmount: this.getResourceAmount(),
++        reason: "Amount must be non-negative",
++      };
++    }
++
++    const currentAmount = this.getResourceAmount();
++    if (currentAmount < amount) {
++      return {
++        success: false,
++        newAmount: currentAmount,
++        reason: `Insufficient resources. Need ${amount}, have ${currentAmount}`,
++      };
++    }
++
++    const newAmount = currentAmount - amount;
++    worldState.setGlobalState(PLAYER_RESOURCES_KEY, String(newAmount));
++
++    return {
++      success: true,
++      newAmount,
++    };
++  }
++
++  /**
++   * 增加资源（用于失败时退还等场景）
++   * @param amount 增加数量
++   */
++  addResources(amount: number): number {
++    if (amount <= 0) return this.getResourceAmount();
++    const currentAmount = this.getResourceAmount();
++    const newAmount = currentAmount + amount;
++    worldState.setGlobalState(PLAYER_RESOURCES_KEY, String(newAmount));
++    return newAmount;
++  }
++
++  /** 获取建造价格配置 */
++  getBuildCosts(): BuildCosts {
++    return { ...DEFAULT_BUILD_COSTS };
++  }
++
++  /** 检查资源点是否处于冷却中 */
++  isOnCooldown(objectId: string): boolean {
++    const node = this.resourceNodes.get(objectId);
++    if (!node) return false;
++    const lastCollect = this.cooldowns.get(objectId) ?? 0;
++    return Date.now() - lastCollect < node.cooldownMs;
++  }
++
++  /** 获取资源点剩余冷却时间（毫秒） */
++  getRemainingCooldownMs(objectId: string): number {
++    const node = this.resourceNodes.get(objectId);
++    if (!node) return 0;
++    const lastCollect = this.cooldowns.get(objectId) ?? 0;
++    const elapsed = Date.now() - lastCollect;
++    return Math.max(0, node.cooldownMs - elapsed);
++  }
++}
+diff --git a/server/src/core/world-manager.ts b/server/src/core/world-manager.ts
+index b7c8693..88312f2 100644
+--- a/server/src/core/world-manager.ts
++++ b/server/src/core/world-manager.ts
+@@ -12,7 +12,7 @@ import type {
+   DialogueSession,
+   SceneConfig,
+ } from "../types/index.js";
+-import { loadWorldConfig, loadSceneConfig, setWorldDir, getWorldDir } from "../utils/config-loader.js";
++import { loadWorldConfig, loadSceneConfig, setWorldDir, getWorldDir, reloadConfigs } from "../utils/config-loader.js";
+ import { setSceneConfig, isSceneComplete, getTicksPerScene } from "../utils/time-helpers.js";
+ import * as worldState from "../store/world-state-store.js";
+ import * as snapshotStore from "../store/snapshot-store.js";
+@@ -53,6 +53,9 @@ export class WorldManager {
+   private mainAreaZoneMap: Map<string, MainAreaZone> = new Map();
+   private worldActions: WorldActionConfig[] = [];
+   private worldSize: WorldSizeConfig | null = null;
++  private collisionData: number[] | null = null;
++  private collisionGridWidth = 0;
++  private collisionGridHeight = 0;
+   private sceneConfig!: SceneConfig;
+   private worldName = "unknown";
+   private worldDescription = "";
+@@ -78,6 +81,7 @@ export class WorldManager {
+     this.preferredMainAreaPointIds = getLargestMainAreaPointComponent(this.mainAreaPoints);
+     this.mainAreaZoneMap = computeMainAreaZones(this.mainAreaPoints);
+     this.worldSize = normalizeWorldSize(config.worldSize) ?? inferWorldSizeFromWorldDir();
++    this.loadCollisionGrid();
+     this.worldActions = config.worldActions ?? [];
+     this.worldName = config.worldName ?? "unknown";
+     this.worldDescription = config.worldDescription ?? "";
+@@ -566,6 +570,202 @@ export class WorldManager {
+     return snapshotStore.listSnapshots();
+   }
+ 
++  /** 检查像素坐标是否可行走 */
++  isPixelWalkable(pixelX: number, pixelY: number): boolean {
++    if (!this.collisionData || !this.worldSize?.tileSize) {
++      // 没有碰撞数据时默认所有位置都可行走
++      return true;
++    }
++    const tileSize = this.worldSize.tileSize;
++    const gx = Math.floor(pixelX / tileSize);
++    const gy = Math.floor(pixelY / tileSize);
++    if (gx < 0 || gy < 0 || gx >= this.collisionGridWidth || gy >= this.collisionGridHeight) {
++      return false;
++    }
++    return this.collisionData[gy * this.collisionGridWidth + gx] === 0;
++  }
++
++  /** 在中心点附近寻找一个可行走的像素点（螺旋搜索） */
++  findWalkablePixelNear(centerX: number, centerY: number, maxRadiusPx = 200): { x: number; y: number } | null {
++    if (!this.collisionData || !this.worldSize?.tileSize) {
++      return { x: centerX, y: centerY };
++    }
++
++    const tileSize = this.worldSize.tileSize;
++    const centerGx = Math.floor(centerX / tileSize);
++    const centerGy = Math.floor(centerY / tileSize);
++    const radiusTiles = Math.ceil(maxRadiusPx / tileSize);
++
++    // 螺旋搜索：从中心向外扩展
++    for (let r = 0; r <= radiusTiles; r++) {
++      // 顶部行
++      for (let dx = -r; dx <= r; dx++) {
++        const gx = centerGx + dx;
++        const gy = centerGy - r;
++        if (this.isTileWalkable(gx, gy)) {
++          return {
++            x: gx * tileSize + tileSize / 2,
++            y: gy * tileSize + tileSize / 2,
++          };
++        }
++      }
++      // 底部行
++      for (let dx = -r; dx <= r; dx++) {
++        const gx = centerGx + dx;
++        const gy = centerGy + r;
++        if (this.isTileWalkable(gx, gy)) {
++          return {
++            x: gx * tileSize + tileSize / 2,
++            y: gy * tileSize + tileSize / 2,
++          };
++        }
++      }
++      // 左侧列（排除已检查的上下角）
++      for (let dy = -r + 1; dy < r; dy++) {
++        const gx = centerGx - r;
++        const gy = centerGy + dy;
++        if (this.isTileWalkable(gx, gy)) {
++          return {
++            x: gx * tileSize + tileSize / 2,
++            y: gy * tileSize + tileSize / 2,
++          };
++        }
++      }
++      // 右侧列（排除已检查的上下角）
++      for (let dy = -r + 1; dy < r; dy++) {
++        const gx = centerGx + r;
++        const gy = centerGy + dy;
++        if (this.isTileWalkable(gx, gy)) {
++          return {
++            x: gx * tileSize + tileSize / 2,
++            y: gy * tileSize + tileSize / 2,
++          };
++        }
++      }
++    }
++
++    return null;
++  }
++
++  /** 获取 main_area 的中心像素坐标 */
++  getMainAreaCenterPixel(): { x: number; y: number } {
++    if (!this.worldSize) {
++      return { x: 0, y: 0 };
++    }
++    return {
++      x: this.worldSize.width / 2,
++      y: this.worldSize.height / 2,
++    };
++  }
++
++  private isTileWalkable(gx: number, gy: number): boolean {
++    if (!this.collisionData) return true;
++    if (gx < 0 || gy < 0 || gx >= this.collisionGridWidth || gy >= this.collisionGridHeight) {
++      return false;
++    }
++    return this.collisionData[gy * this.collisionGridWidth + gx] === 0;
++  }
++
++  private loadCollisionGrid(): void {
++    const worldDir = getWorldDir();
++    if (!worldDir) return;
++
++    const tmjPath = path.join(worldDir, "map", "06-final.tmj");
++    if (!fs.existsSync(tmjPath)) return;
++
++    try {
++      const raw = fs.readFileSync(tmjPath, "utf-8");
++      const tmj = JSON.parse(raw) as {
++        width?: number;
++        height?: number;
++        tilewidth?: number;
++        layers?: Array<{ name?: string; data?: unknown }>;
++      };
++      const gridWidth = Number(tmj.width);
++      const gridHeight = Number(tmj.height);
++      const collisionData = tmj.layers?.find((layer) => layer.name === "collision")?.data;
++
++      if (
++        !Number.isFinite(gridWidth) ||
++        !Number.isFinite(gridHeight) ||
++        !Array.isArray(collisionData) ||
++        collisionData.length !== gridWidth * gridHeight
++      ) {
++        return;
++      }
++
++      this.collisionData = collisionData as number[];
++      this.collisionGridWidth = gridWidth;
++      this.collisionGridHeight = gridHeight;
++
++      // Also update worldSize to match new dimensions
++      const tileSize = Number(tmj.tilewidth);
++      if (Number.isFinite(tileSize) && this.worldSize) {
++        this.worldSize = {
++          ...this.worldSize,
++          width: gridWidth * tileSize,
++          height: gridHeight * tileSize,
++          tileSize,
++          gridWidth,
++          gridHeight,
++        };
++      }
++    } catch (error) {
++      console.warn("[WorldManager] Failed to load collision grid:", error);
++    }
++  }
++
++  /**
++   * Reload map data (collision grid, world size) after map expansion.
++   * Called by MapExpander after a successful expansion job.
++   */
++  /**
++   * Reload map data (collision grid, world size, locations, main area points)
++   * after map expansion. Called by MapExpander after a successful expansion job.
++   *
++   * This performs a full reload of all world config that may have changed:
++   * 1. Invalidate cached world.json and re-read it
++   * 2. Re-normalize location configs (new regions added by expansion)
++   * 3. Rebuild main area point adjacency graph (new points + new walkable paths)
++   * 4. Reload collision grid and world size from updated TMJ
++   */
++  reloadAfterExpansion(): void {
++    console.log("[WorldManager] Reloading world data after expansion...");
++
++    // 1. Invalidate config cache so world.json is re-read from disk
++    reloadConfigs();
++
++    // 2. Re-load world config
++    const config = loadWorldConfig();
++
++    // 3. Re-normalize locations (includes new regions from expansion)
++    this.locationConfigs = normalizeLocations(
++      config.locations,
++      config.worldName ?? "main_area",
++      config.worldDescription ?? "",
++    );
++
++    // 4. Rebuild main area point adjacency (new points + new walkable paths from expanded grid)
++    this.mainAreaPoints = rebuildMainAreaPointAdjacencyFromTmj(
++      normalizeMainAreaPoints(config.mainAreaPoints),
++    );
++    this.preferredMainAreaPointIds = getLargestMainAreaPointComponent(this.mainAreaPoints);
++    this.mainAreaZoneMap = computeMainAreaZones(this.mainAreaPoints);
++
++    // 5. Reload collision grid + world size from updated TMJ
++    this.worldSize = normalizeWorldSize(config.worldSize) ?? inferWorldSizeFromWorldDir();
++    this.loadCollisionGrid();
++
++    // 6. Update world actions/metadata in case they changed
++    this.worldActions = config.worldActions ?? [];
++
++    console.log(
++      `[WorldManager] World reloaded: ${this.collisionGridWidth}x${this.collisionGridHeight} tiles, ` +
++      `${this.worldSize?.width}x${this.worldSize?.height}px, ` +
++      `${this.locationConfigs.length} locations, ${this.mainAreaPoints.length} main area points`,
++    );
++  }
++
+   private findObjectConfig(objectId: string): ObjectConfig | undefined {
+     for (const loc of this.locationConfigs) {
+       const obj = loc.objects.find((o) => o.id === objectId);
+diff --git a/server/src/index.ts b/server/src/index.ts
+index 7b1711a..cd4ea01 100644
+--- a/server/src/index.ts
++++ b/server/src/index.ts
+@@ -18,6 +18,7 @@ import simulationRoutes from "./api/routes/simulation.js";
+ import godRoutes from "./api/routes/god.js";
+ import sandboxChatRoutes from "./api/routes/sandbox-chat.js";
+ import timelineRoutes from "./api/routes/timeline.js";
++import buildRoutes from "./api/routes/build.js";
+ import { resolveInitialWorldDir } from "./utils/world-directories.js";
+ 
+ const __filename = fileURLToPath(import.meta.url);
+@@ -106,6 +107,7 @@ async function main() {
+   app.use("/api/god", requireWorld, godRoutes);
+   app.use("/api/sandbox/chat", requireWorld, sandboxChatRoutes);
+   app.use("/api/timelines", timelineRoutes);
++  app.use("/api/build", requireWorld, buildRoutes);
+ 
+   app.use("/assets/map", createWorldAssetHandler("map"));
+   app.use("/assets/characters", createWorldAssetHandler("characters"));
+diff --git a/server/src/services/app-context.ts b/server/src/services/app-context.ts
+index c60f4bd..08df69d 100644
+--- a/server/src/services/app-context.ts
++++ b/server/src/services/app-context.ts
+@@ -1,6 +1,10 @@
+ import { EventEmitter } from "node:events";
+ import { WorldManager } from "../core/world-manager.js";
+ import { CharacterManager } from "../core/character-manager.js";
++import { CharacterBuilder } from "../core/character-builder.js";
++import { MapExpander } from "../core/map-expander.js";
++import { ResourceManager } from "../core/resource-manager.js";
++import { PlayerManager } from "../core/player-manager.js";
+ import { LLMClient } from "../llm/llm-client.js";
+ import { PromptBuilder } from "../llm/prompt-builder.js";
+ import { SimulationEngine } from "../simulation/simulation-engine.js";
+@@ -15,6 +19,10 @@ import type { InitFrameCharacter } from "./timeline-manager.js";
+ export class AppContext {
+   worldManager!: WorldManager;
+   characterManager!: CharacterManager;
++  characterBuilder!: CharacterBuilder;
++  mapExpander!: MapExpander;
++  resourceManager!: ResourceManager;
++  playerManager!: PlayerManager;
+   llmClient!: LLMClient;
+   promptBuilder!: PromptBuilder;
+   decisionMaker!: DecisionMaker;
+@@ -162,6 +170,24 @@ export class AppContext {
+     this.characterManager = new CharacterManager(this.worldManager);
+     this.characterManager.initialize();
+ 
++    this.characterBuilder = new CharacterBuilder(
++      this.worldManager,
++      this.characterManager,
++      () => this.getWorldDir(),
++    );
++
++    this.resourceManager = new ResourceManager(this.worldManager);
++    this.resourceManager.initialize();
++
++    this.mapExpander = new MapExpander(
++      this.worldManager,
++      () => this.getWorldDir(),
++      this.resourceManager,
++    );
++
++    this.playerManager = new PlayerManager(this.worldManager);
++    this.playerManager.initialize();
++
+     if (!this.llmClient) {
+       this.llmClient = new LLMClient();
+     }
+diff --git a/server/src/simulation/simulation-engine.ts b/server/src/simulation/simulation-engine.ts
+index 1b2d356..b1812b4 100644
+--- a/server/src/simulation/simulation-engine.ts
++++ b/server/src/simulation/simulation-engine.ts
+@@ -100,6 +100,9 @@ export class SimulationEngine {
+ 
+     for (const char of allChars) {
+       try {
++        // 静态角色不参与AI决策
++        if (char.isStatic) continue;
++
+         const shouldDecide = this.prepareCharacterForTick(
+           char.id,
+           gameTime,
+diff --git a/server/src/types/character.ts b/server/src/types/character.ts
+index 921ae57..e384f88 100644
+--- a/server/src/types/character.ts
++++ b/server/src/types/character.ts
+@@ -47,6 +47,9 @@ export interface CharacterProfile {
+   /** 锚定：限制角色必须待在某个区域或可交互元素附近 */
+   anchor?: CharacterAnchor;
+ 
++  /** 静态角色：不参与AI决策循环（例如新生成的角色，后续再激活） */
++  isStatic?: boolean;
++
+   /** 仅为知名 IP 角色而填，普通原创角色应为 undefined */
+   iconicCues?: IconicCues;
+   canonicalRefs?: CanonicalRefs;
+diff --git a/server/src/utils/config-loader.ts b/server/src/utils/config-loader.ts
+index ea499a8..366f0f7 100644
+--- a/server/src/utils/config-loader.ts
++++ b/server/src/utils/config-loader.ts
+@@ -161,6 +161,7 @@ function normalizeCharacterProfile(raw: any): CharacterProfile | null {
+     tags: Array.isArray(raw.tags) ? raw.tags : [],
+     initialMemories: normalizeInitialMemories(raw.initialMemories, startLocation),
+     anchor: normalizeAnchor(raw.anchor),
++    isStatic: raw.isStatic === true,
+     iconicCues: normalizeIconicCues(raw.iconicCues),
+     canonicalRefs: normalizeCanonicalRefs(raw.canonicalRefs),
+   };

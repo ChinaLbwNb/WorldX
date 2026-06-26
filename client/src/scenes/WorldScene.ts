@@ -6,9 +6,24 @@ import { CharacterMovement } from "../systems/CharacterMovement";
 import { PlaybackController } from "../systems/PlaybackController";
 import { CameraController } from "../systems/CameraController";
 import { CharacterSprite } from "../objects/CharacterSprite";
-import { getCharacterColor, actionToEmoji, createCharacterDisplayMetrics } from "../config/game-config";
+import { PlayerSprite } from "../objects/PlayerSprite";
+import { getCharacterColor, actionToEmoji, createCharacterDisplayMetrics, SPRITE_FRAME_WIDTH, SPRITE_FRAME_HEIGHT } from "../config/game-config";
 import { apiClient } from "../ui/services/api-client";
-import type { CharacterInfo, DialogueEventData, SimulationEvent } from "../types/api";
+import type { CharacterInfo, DialogueEventData, SimulationEvent, BuildState } from "../types/api";
+
+/** Normalized resource node with frontend-friendly field names. */
+interface ResourceNodeNormalized {
+  objectId: string;
+  name: string;
+  locationId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  resourcePerClick: number;
+  cooldownMs: number;
+  remaining: number;
+}
 
 type DialoguePlaybackTurn = {
   speaker: string;
@@ -54,6 +69,15 @@ export class WorldScene extends Phaser.Scene {
   private pendingPlaybackAsyncOps = 0;
   private pendingDialogueCleanupTimers = 0;
   private playbackCompletionCheckTimer: Phaser.Time.TimerEvent | null = null;
+  private playerSprite: PlayerSprite | null = null;
+  private buildState: BuildState | null = null;
+  private resourceNodes: Map<string, ResourceNodeNormalized> = new Map();
+  private resourceMarkers: Phaser.GameObjects.Container | null = null;
+  private collectButtonContainer: Phaser.GameObjects.Container | null = null;
+  private collectButtonBg: Phaser.GameObjects.Graphics | null = null;
+  private collectButtonText: Phaser.GameObjects.Text | null = null;
+  private nearbyResourceObjectId: string | null = null;
+  private readonly COLLECT_INTERACTION_RADIUS = 120;
 
   constructor() {
     super("WorldScene");
@@ -216,16 +240,480 @@ export class WorldScene extends Phaser.Scene {
     }
 
     try {
+      await this.initPlayerAndBuild();
+    } catch (e) {
+      console.warn("[WorldScene] Failed to init player/build:", e);
+    }
+
+    try {
       await this.playbackController.initialize();
     } catch (e) {
       console.warn("[WorldScene] Failed to initialize playback:", e);
     }
 
     console.log("[WorldScene] Async init complete, sprites:", this.characterSprites.size);
+
+    // Try upgrading any circle-fallback sprites to proper sprites if
+    // textures became available during async init (safety net for timing).
+    this.upgradeCharacterSprites();
+  }
+
+  /** Try upgrading all character sprites from circle fallback to sprite sheets. */
+  private upgradeCharacterSprites(): void {
+    let upgraded = 0;
+    for (const sprite of this.characterSprites.values()) {
+      if (sprite.tryUpgradeToSprite()) {
+        upgraded++;
+      }
+    }
+    if (upgraded > 0) {
+      console.log(`[WorldScene] Upgraded ${upgraded} characters to sprite mode`);
+    }
   }
 
   private async initCharacters() {
     await this.syncCharactersFromServer();
+  }
+
+  private async initPlayerAndBuild() {
+    try {
+      const state = await apiClient.getBuildState();
+      this.buildState = state;
+      this.resourceNodes.clear();
+      for (const node of state.resourceNodes) {
+        // Map API fields (id, pixelX, pixelY) to frontend-friendly names
+        // (objectId, x, y) and add a remaining count for UI purposes.
+        const normalized: ResourceNodeNormalized = {
+          objectId: node.id,
+          name: node.name,
+          locationId: node.locationId,
+          x: node.pixelX - node.width / 2,
+          y: node.pixelY - node.height / 2,
+          width: node.width,
+          height: node.height,
+          resourcePerClick: node.resourcePerClick,
+          cooldownMs: node.cooldownMs,
+          remaining: 999, // unlimited conceptually, cooldown-based
+        };
+        this.resourceNodes.set(normalized.objectId, normalized);
+      }
+
+      const displayMetrics = createCharacterDisplayMetrics(this.mapPixelWidth, this.mapPixelHeight);
+      const px = state.playerState.pixelX || this.mapPixelWidth / 2;
+      const py = state.playerState.pixelY || this.mapPixelHeight / 2;
+
+      this.playerSprite = new PlayerSprite(this, px, py, { displayMetrics });
+      this.entityLayer.add(this.playerSprite);
+
+      this.setupResourceMarkers();
+      this.setupGroundClickHandler();
+      this.setupResourceInteraction();
+      this.setupCollectButton();
+
+      this.eventBus.emit("build_state_updated", state);
+    } catch (e) {
+      console.warn("[WorldScene] Build system not available:", e);
+    }
+  }
+
+  /**
+   * Create glowing visual markers on the map for each resource node.
+   * Each marker is a semi-transparent glowing ring + 💎 icon, with hover effect.
+   */
+  private setupResourceMarkers(): void {
+    if (this.resourceNodes.size === 0) return;
+
+    this.resourceMarkers = this.add.container(0, 0);
+    this.resourceMarkers.setDepth(8);
+
+    console.log(`[WorldScene] Creating ${this.resourceNodes.size} resource markers`);
+
+    for (const node of this.resourceNodes.values()) {
+      const centerX = node.x + node.width / 2;
+      const centerY = node.y + node.height / 2;
+
+      const marker = this.add.container(centerX, centerY);
+
+      // Outer glow ring (pulsing)
+      const glowRing = this.add.graphics();
+      const glowRadius = Math.max(node.width, node.height) * 0.7;
+      glowRing.lineStyle(3, 0x55efc4, 0.6);
+      glowRing.strokeCircle(0, 0, glowRadius);
+      glowRing.setAlpha(0.8);
+
+      // Inner filled circle (semi-transparent highlight
+      const innerFill = this.add.graphics();
+      innerFill.fillStyle(0x55efc4, 0.15);
+      innerFill.fillCircle(0, 0, glowRadius * 0.7);
+
+      // Diamond emoji / icon in the center
+      const icon = this.add.text(0, 0, "💎", {
+        fontSize: `${Math.min(node.width * 0.6)}px`,
+        fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
+      }).setOrigin(0.5, 0.5);
+
+      // Pulsing animation for the glow ring
+      const glowTween = this.tweens.add({
+        targets: { scale: 1 },
+        scale: 1.25,
+        duration: 1800,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+        onUpdate: (tween) => {
+          const s = (tween.targets[0] as { scale: number }).scale;
+          glowRing.setScale(s);
+          glowRing.setAlpha(0.9 - (s - 1) * 2);
+        },
+      });
+
+      // Store references for hover state
+      marker.setData("node", node);
+      marker.setData("glowRing", glowRing);
+      marker.setData("glowTween", glowTween);
+      marker.setData("icon", icon);
+      marker.setData("innerFill", innerFill);
+
+      // Make the marker interactive (use a larger hit area for easier clicking)
+      const hitRadius = glowRadius * 1.3;
+      marker.setSize(hitRadius * 2, hitRadius * 2);
+      marker.setInteractive(
+        new Phaser.Geom.Circle(0, 0, hitRadius),
+        Phaser.Geom.Circle.Contains,
+      );
+
+      // Hover effects
+      marker.on("pointerover", () => {
+        const ring = marker.getData("glowRing") as Phaser.GameObjects.Graphics;
+        const iconEl = marker.getData("icon") as Phaser.GameObjects.Text;
+        if (ring) {
+          ring.clear();
+          ring.lineStyle(4, 0xffffff, 0.9);
+          ring.strokeCircle(0, 0, glowRadius * 1.15);
+        }
+        if (iconEl) {
+          iconEl.setScale(1.15);
+        }
+        // Show the resource name tooltip
+        this.showResourceTooltip(centerX, centerY - node.height / 2 - 10, node.name);
+      });
+
+      marker.on("pointerout", () => {
+        const ring = marker.getData("glowRing") as Phaser.GameObjects.Graphics;
+        const iconEl = marker.getData("icon") as Phaser.GameObjects.Text;
+        if (ring) {
+          ring.clear();
+          ring.lineStyle(3, 0x55efc4, 0.6);
+          ring.strokeCircle(0, 0, glowRadius);
+        }
+        if (iconEl) {
+          iconEl.setScale(1);
+        }
+        this.hideResourceTooltip();
+      });
+
+      // Click handler — move player to resource & collect
+      marker.on("pointerdown", () => {
+        this.handleResourceClick(node.objectId);
+      });
+
+      marker.add([innerFill, glowRing, icon]);
+      this.resourceMarkers.add(marker);
+    }
+
+    // Sort markers by Y for proper depth ordering
+    this.resourceMarkers.list.sort((a, b) => (a as Phaser.GameObjects.Container).y - (b as Phaser.GameObjects.Container).y);
+  }
+
+  private resourceTooltipContainer: Phaser.GameObjects.Container | null = null;
+  private resourceTooltipBg: Phaser.GameObjects.Graphics | null = null;
+  private resourceTooltipText: Phaser.GameObjects.Text | null = null;
+
+  private showResourceTooltip(x: number, y: number, text: string): void {
+    if (!this.resourceTooltipContainer) {
+      this.resourceTooltipContainer = this.add.container(0, 0);
+      this.resourceTooltipContainer.setDepth(50);
+
+      this.resourceTooltipBg = this.add.graphics();
+      this.resourceTooltipText = this.add.text(0, 0, "", {
+        fontSize: "13px",
+        fontFamily: "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
+        color: "#ffffff",
+        fontStyle: "bold",
+        stroke: "#000000",
+        strokeThickness: 2,
+      }).setOrigin(0.5, 0.5);
+
+      this.resourceTooltipContainer.add([this.resourceTooltipBg, this.resourceTooltipText]);
+    }
+
+    if (!this.resourceTooltipBg || !this.resourceTooltipText) return;
+
+    this.resourceTooltipText.setText(text);
+    const textW = this.resourceTooltipText.width;
+    const textH = this.resourceTooltipText.height;
+    const padX = 12;
+    const padY = 6;
+
+    this.resourceTooltipBg.clear();
+    this.resourceTooltipBg.fillStyle(0x000000, 0.75);
+    this.resourceTooltipBg.fillRoundedRect(
+      -textW / 2 - padX,
+      -textH / 2 - padY,
+      textW + padX * 2,
+      textH + padY * 2,
+      6,
+    );
+
+    this.resourceTooltipContainer.setPosition(x, y);
+    this.resourceTooltipContainer.setVisible(true);
+  }
+
+  private hideResourceTooltip(): void {
+    this.resourceTooltipContainer?.setVisible(false);
+  }
+
+  private setupGroundClickHandler(): void {
+    // Use the main camera's input to detect clicks on empty ground.
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer, currentlyOver: Phaser.GameObjects.GameObject[]) => {
+      if (!this.playerSprite) return;
+      if (this.playerSprite.isMoving) return;
+
+      // Check if we clicked on a character sprite or UI element - if so, skip ground move.
+      const clickedOnSprite = currentlyOver.some(
+        (obj) => obj instanceof CharacterSprite || obj === this.playerSprite
+      );
+      if (clickedOnSprite) return;
+
+      // Check if we clicked on an interactive object (resource node)
+      const clickedOnObject = currentlyOver.some((obj) => {
+        return obj instanceof Phaser.GameObjects.Zone;
+      });
+      if (clickedOnObject) return;
+
+      // Check if we clicked on a resource marker
+      if (this.resourceMarkers) {
+        const clickedOnMarker = currentlyOver.some((obj) => {
+          // Walk up the parent chain to see if we're inside a resource marker
+          let current: any = obj;
+          while (current) {
+            if (current === this.resourceMarkers) return true;
+            current = current.parentContainer;
+          }
+          return false;
+        });
+        if (clickedOnMarker) return;
+      }
+
+      // Get world position from pointer
+      const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      const targetX = Phaser.Math.Clamp(worldPoint.x, 32, this.mapPixelWidth - 32);
+      const targetY = Phaser.Math.Clamp(worldPoint.y, 32, this.mapPixelHeight - 32);
+
+      this.movePlayerTo(targetX, targetY);
+    });
+  }
+
+  private async movePlayerTo(targetX: number, targetY: number): Promise<void> {
+    if (!this.playerSprite) return;
+
+    // Optimistic: start moving locally first for responsiveness
+    this.playerSprite.moveToPosition(targetX, targetY, () => {
+      this.updateNearbyResource();
+    });
+
+    // Sync with server in the background
+    try {
+      const result = await apiClient.movePlayer(targetX, targetY);
+      if (result.ok && result.playerState) {
+        // If server returns a different position, snap to it gently
+        const serverX = result.playerState.pixelX;
+        const serverY = result.playerState.pixelY;
+        const dist = Phaser.Math.Distance.Between(
+          this.playerSprite.x,
+          this.playerSprite.y,
+          serverX,
+          serverY
+        );
+        if (dist > 10 && !this.playerSprite.isMoving) {
+          this.playerSprite.moveToPosition(serverX, serverY);
+        }
+      }
+    } catch (e) {
+      console.warn("[WorldScene] Failed to sync player move:", e);
+    }
+  }
+
+  private setupResourceInteraction(): void {
+    // Add click handlers for resource nodes via the interactive object zones
+    for (const object of this.mapManager.getInteractiveObjects()) {
+      const node = this.resourceNodes.get(object.objectId);
+      if (!node) continue;
+
+      // Find the existing zone and add a click handler
+      const zones = this.children.getAll().filter(
+        (child) =>
+          child instanceof Phaser.GameObjects.Zone &&
+          child.x === object.x &&
+          child.y === object.y
+      );
+
+      for (const zone of zones) {
+        (zone as Phaser.GameObjects.Zone).on("pointerdown", () => {
+          this.handleResourceClick(node.objectId);
+        });
+      }
+    }
+  }
+
+  private handleResourceClick(objectId: string): void {
+    if (!this.playerSprite) return;
+    const node = this.resourceNodes.get(objectId);
+    if (!node) return;
+
+    // Calculate the interaction position (in front of the object)
+    const targetX = node.x + node.width / 2;
+    const targetY = node.y + node.height + 20;
+
+    const dist = Phaser.Math.Distance.Between(
+      this.playerSprite.x,
+      this.playerSprite.y,
+      targetX,
+      targetY
+    );
+
+    if (dist <= this.COLLECT_INTERACTION_RADIUS) {
+      // Player is already nearby, show collect button
+      this.showCollectButton(objectId);
+    } else {
+      // Move player to the resource first
+      this.movePlayerTo(targetX, targetY);
+    }
+  }
+
+  private setupCollectButton(): void {
+    this.collectButtonContainer = this.add.container(0, 0);
+    this.collectButtonContainer.setDepth(30);
+    this.collectButtonContainer.setVisible(false);
+
+    this.collectButtonBg = this.add.graphics();
+    this.collectButtonText = this.add
+      .text(0, 0, "采集", {
+        fontSize: "14px",
+        fontFamily: "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5, 0.5);
+
+    this.collectButtonContainer.add([this.collectButtonBg, this.collectButtonText]);
+
+    // Make button interactive
+    this.collectButtonContainer.setSize(80, 32);
+    this.collectButtonContainer.setInteractive(
+      new Phaser.Geom.Rectangle(-40, -16, 80, 32),
+      Phaser.Geom.Rectangle.Contains
+    );
+    this.collectButtonContainer.on("pointerdown", () => {
+      if (this.nearbyResourceObjectId) {
+        this.collectResource(this.nearbyResourceObjectId);
+      }
+    });
+    this.collectButtonContainer.on("pointerover", () => {
+      this.collectButtonText?.setStyle({ color: "#a3f7bf" });
+    });
+    this.collectButtonContainer.on("pointerout", () => {
+      this.collectButtonText?.setStyle({ color: "#ffffff" });
+    });
+  }
+
+  private showCollectButton(objectId: string): void {
+    if (!this.collectButtonContainer || !this.collectButtonBg || !this.collectButtonText) return;
+
+    const node = this.resourceNodes.get(objectId);
+    if (!node) return;
+
+    this.nearbyResourceObjectId = objectId;
+
+    const btnW = 80;
+    const btnH = 32;
+    this.collectButtonBg.clear();
+    this.collectButtonBg.fillStyle(0x00b894, 0.9);
+    this.collectButtonBg.fillRoundedRect(-btnW / 2, -btnH / 2, btnW, btnH, 8);
+    this.collectButtonBg.lineStyle(2, 0xffffff, 0.3);
+    this.collectButtonBg.strokeRoundedRect(-btnW / 2, -btnH / 2, btnW, btnH, 8);
+
+    const btnX = node.x + node.width / 2;
+    const btnY = node.y - 20;
+    this.collectButtonContainer.setPosition(btnX, btnY);
+    this.collectButtonContainer.setVisible(true);
+  }
+
+  private hideCollectButton(): void {
+    this.collectButtonContainer?.setVisible(false);
+    this.nearbyResourceObjectId = null;
+  }
+
+  private updateNearbyResource(): void {
+    if (!this.playerSprite) return;
+
+    let nearestNode: ResourceNodeNormalized | null = null;
+    let nearestDist = Infinity;
+
+    for (const node of this.resourceNodes.values()) {
+      const nodeCenterX = node.x + node.width / 2;
+      const nodeCenterY = node.y + node.height / 2;
+      const dist = Phaser.Math.Distance.Between(
+        this.playerSprite.x,
+        this.playerSprite.y,
+        nodeCenterX,
+        nodeCenterY
+      );
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestNode = node;
+      }
+    }
+
+    if (nearestNode && nearestDist <= this.COLLECT_INTERACTION_RADIUS && nearestNode.remaining > 0) {
+      this.showCollectButton(nearestNode.objectId);
+    } else {
+      this.hideCollectButton();
+    }
+  }
+
+  private async collectResource(objectId: string): Promise<void> {
+    try {
+      const result = await apiClient.collectResource(objectId);
+      if (result.success) {
+        // Update local resource node
+        const node = this.resourceNodes.get(objectId);
+        if (node) {
+          // Decrement remaining count
+          node.remaining = Math.max(0, node.remaining - 1);
+        }
+
+        // Update build state with new resources
+        if (this.buildState) {
+          this.buildState.resources = result.resources;
+        }
+
+        this.eventBus.emit("resource_collected", {
+          objectId,
+          gained: result.amount,
+          resources: result.resources,
+        });
+
+        this.eventBus.emit("build_state_updated", this.buildState);
+
+        // Hide button if depleted
+        if (node && node.remaining <= 0) {
+          this.hideCollectButton();
+        }
+      }
+    } catch (e) {
+      console.warn("[WorldScene] Failed to collect resource:", e);
+    }
   }
 
   private handleReplayInit(initFrame: { characters: { id: string; name: string; location: string; mainAreaPointId: string | null }[] }) {
@@ -286,6 +774,14 @@ export class WorldScene extends Phaser.Scene {
       mainAreaOccupants.set(char.mainAreaPointId, occupants);
     }
 
+    // Preload all character spritesheets dynamically (no dependency on BootScene timing)
+    const charsToLoad = characters.filter((c) => !this.textures.exists(c.id));
+    if (charsToLoad.length > 0) {
+      console.log(`[WorldScene] Loading ${charsToLoad.length} character spritesheets...`);
+      await this.loadCharacterSpritesheets(charsToLoad.map((c) => c.id));
+      console.log(`[WorldScene] Character spritesheets loaded`);
+    }
+
     for (const [index, char] of characters.entries()) {
       seenCharacterIds.add(char.id);
       const pos = this.getCharacterPlacement(char, mainAreaOccupants);
@@ -302,6 +798,9 @@ export class WorldScene extends Phaser.Scene {
         sprite.enableClick((id) => this.eventBus.emit("character_clicked", id));
         this.entityLayer.add(sprite);
         this.characterSprites.set(char.id, sprite);
+      } else {
+        // Try upgrading from circle fallback if sprite is now available
+        sprite.tryUpgradeToSprite();
       }
 
       this.applyCharacterSnapshotToSprite(sprite, char, pos, zoom);
@@ -312,6 +811,42 @@ export class WorldScene extends Phaser.Scene {
       sprite.destroy();
       this.characterSprites.delete(charId);
     }
+  }
+
+  /** Dynamically load character spritesheets via Phaser Loader. */
+  private loadCharacterSpritesheets(charIds: string[]): Promise<void> {
+    return new Promise((resolve) => {
+      let remaining = charIds.length;
+      if (remaining === 0) {
+        resolve();
+        return;
+      }
+
+      for (const charId of charIds) {
+        this.load.spritesheet(charId, `/assets/characters/${charId}/spritesheet.png`, {
+          frameWidth: SPRITE_FRAME_WIDTH,
+          frameHeight: SPRITE_FRAME_HEIGHT,
+        });
+      }
+
+      this.load.once("complete", () => {
+        // Apply LINEAR filter to all loaded character textures
+        for (const charId of charIds) {
+          if (this.textures.exists(charId)) {
+            this.textures.get(charId).setFilter(Phaser.Textures.FilterMode.LINEAR);
+          }
+        }
+        resolve();
+      });
+
+      this.load.once("loaderror", () => {
+        // Even if some fail, continue
+        remaining--;
+        if (remaining <= 0) resolve();
+      });
+
+      this.load.start();
+    });
   }
 
   private getCharacterPlacement(
@@ -913,10 +1448,19 @@ export class WorldScene extends Phaser.Scene {
     for (const sprite of this.characterSprites.values()) {
       sprite.syncOverlayZoom(zoom);
     }
+    this.playerSprite?.syncOverlayZoom(zoom);
     if (this.entityLayer) {
       this.entityLayer.list.sort((a, b) => {
-        const ay = a instanceof CharacterSprite ? a.getSortFootY() : (a as Phaser.GameObjects.Sprite).y || 0;
-        const by = b instanceof CharacterSprite ? b.getSortFootY() : (b as Phaser.GameObjects.Sprite).y || 0;
+        const ay = a instanceof CharacterSprite
+          ? a.getSortFootY()
+          : a instanceof PlayerSprite
+          ? a.getSortFootY()
+          : (a as Phaser.GameObjects.Sprite).y || 0;
+        const by = b instanceof CharacterSprite
+          ? b.getSortFootY()
+          : b instanceof PlayerSprite
+          ? b.getSortFootY()
+          : (b as Phaser.GameObjects.Sprite).y || 0;
         return ay - by;
       });
     }

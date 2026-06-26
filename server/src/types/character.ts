@@ -47,6 +47,9 @@ export interface CharacterProfile {
   /** 锚定：限制角色必须待在某个区域或可交互元素附近 */
   anchor?: CharacterAnchor;
 
+  /** 静态角色：不参与AI决策循环（例如新生成的角色，后续再激活） */
+  isStatic?: boolean;
+
   /** 仅为知名 IP 角色而填，普通原创角色应为 undefined */
   iconicCues?: IconicCues;
   canonicalRefs?: CanonicalRefs;

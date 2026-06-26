@@ -100,6 +100,9 @@ export class SimulationEngine {
 
     for (const char of allChars) {
       try {
+        // 静态角色不参与AI决策
+        if (char.isStatic) continue;
+
         const shouldDecide = this.prepareCharacterForTick(
           char.id,
           gameTime,

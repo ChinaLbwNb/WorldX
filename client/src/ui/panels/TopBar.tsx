@@ -13,6 +13,17 @@ import { LanguageToggle } from "../components/LanguageToggle";
 import { translatePeriod } from "../utils/time-i18n";
 import { sortLibraryWorldsForLocale } from "../utils/library-world-sort";
 
+const RESOURCE_ICONS: Record<string, string> = {
+  wood: "🪵",
+  stone: "🪨",
+  iron: "⚙️",
+  food: "🍞",
+  gold: "💰",
+  crystal: "💎",
+  fiber: "🧵",
+  herb: "🌿",
+};
+
 type ViewMode = "run" | "replay";
 
 export function TopBar({
@@ -36,6 +47,9 @@ export function TopBar({
   isReplaying,
   replayProgress,
   onHeightChange,
+  resources,
+  onToggleBuildPanel,
+  buildPanelOpen,
 }: {
   worldInfo?: WorldInfo | null;
   gameTime: WorldTimeInfo;
@@ -57,6 +71,9 @@ export function TopBar({
   isReplaying: boolean;
   replayProgress: { current: number; total: number } | null;
   onHeightChange?: (height: number) => void;
+  resources?: number | null;
+  onToggleBuildPanel?: () => void;
+  buildPanelOpen?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -328,6 +345,11 @@ export function TopBar({
           <span style={{ fontSize: 12, color: "#dfe6e9", whiteSpace: "nowrap" }}>{timeLabel}</span>
         </div>
 
+        {/* Center: resources */}
+        {resources !== null && resources !== undefined && (
+          <ResourceDisplay resources={resources} />
+        )}
+
         {/* Right: mode toggle + play/pause */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           {/* Mode toggle: Run / Replay */}
@@ -486,6 +508,16 @@ export function TopBar({
           >
             {t("topbar.sandboxChat")}
           </button>
+          {onToggleBuildPanel && resources !== null && resources !== undefined && (
+            <button
+              onClick={onToggleBuildPanel}
+              disabled={inReplayMode}
+              style={{ ...chipBtnStyle(buildPanelOpen ?? false), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
+              title="建造面板"
+            >
+              🏗️ 建造
+            </button>
+          )}
 
           {isDevMode && (
             <>
@@ -536,6 +568,11 @@ export function TopBar({
           90% { opacity: 1; transform: translate(-50%, 0); }
           100% { opacity: 0; transform: translate(-50%, -10px); }
         }
+        @keyframes resourcePop {
+          0% { opacity: 0; transform: translateY(0); }
+          30% { opacity: 1; transform: translateY(-4px); }
+          100% { opacity: 0; transform: translateY(-16px); }
+        }
       `}</style>
 
       {showPauseToast && typeof document !== "undefined" && createPortal(
@@ -560,6 +597,75 @@ export function TopBar({
       {managerModalOpen && typeof document !== "undefined"
         ? createPortal(<TimelineManagerModal onClose={() => setManagerModalOpen(false)} />, document.body)
         : null}
+    </div>
+  );
+}
+
+// --- Resource Display Component ---
+
+function ResourceDisplay({ resources }: { resources: number | null | undefined }) {
+  const [animating, setAnimating] = useState(false);
+  const prevResourcesRef = useRef<number>(0);
+
+  useEffect(() => {
+    const prev = prevResourcesRef.current;
+    if (resources !== undefined && resources !== null && resources > prev) {
+      setAnimating(true);
+      const timer = setTimeout(() => setAnimating(false), 600);
+      return () => clearTimeout(timer);
+    }
+    if (resources !== undefined && resources !== null) {
+      prevResourcesRef.current = resources;
+    }
+  }, [resources]);
+
+  if (resources === null || resources === undefined) return null;
+
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      flexWrap: "wrap",
+      justifyContent: "center",
+    }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: "rgba(255, 215, 0, 0.1)",
+          border: "1px solid rgba(255, 215, 0, 0.25)",
+          borderRadius: 999,
+          padding: "4px 12px",
+          fontSize: 13,
+          color: "#ffd700",
+          fontWeight: 600,
+          transition: "transform 0.2s, box-shadow 0.2s",
+          transform: animating ? "scale(1.15)" : "scale(1)",
+          boxShadow: animating ? "0 0 12px rgba(255, 215, 0, 0.5)" : "none",
+          position: "relative",
+        }}
+        title="资源"
+      >
+        <span style={{ fontSize: 16 }}>💎</span>
+        <span style={{ minWidth: 20, textAlign: "right" }}>
+          {resources}
+        </span>
+        {animating && (
+          <span style={{
+            position: "absolute",
+            top: -18,
+            right: 4,
+            fontSize: 11,
+            fontWeight: 700,
+            color: "#ffd700",
+            animation: "resourcePop 0.6s ease-out forwards",
+          }}>
+            +1
+          </span>
+        )}
+      </div>
     </div>
   );
 }

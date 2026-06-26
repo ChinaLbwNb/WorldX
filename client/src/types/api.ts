@@ -171,3 +171,47 @@ export interface TimelineTickFrame {
 }
 
 export type TimelineFrame = TimelineInitFrame | TimelineTickFrame;
+
+// --- Build System Types ---
+
+export interface BuildResourceNode {
+  id: string;
+  name: string;
+  locationId: string;
+  pixelX: number;
+  pixelY: number;
+  width: number;
+  height: number;
+  resourcePerClick: number;
+  cooldownMs: number;
+}
+
+export interface BuildPlayerState {
+  id: string;
+  name: string;
+  pixelX: number;
+  pixelY: number;
+  resources: number;
+  isMoving: boolean;
+}
+
+export interface BuildCosts {
+  character: number;
+  mapExpand: number;
+}
+
+export interface BuildState {
+  resources: number;
+  playerState: BuildPlayerState;
+  costs: BuildCosts;
+  resourceNodes: BuildResourceNode[];
+}
+
+export interface BuildJobStatus {
+  jobId: string;
+  status: "pending" | "running" | "done" | "error";
+  progress: number;
+  total: number;
+  error?: string;
+  result?: unknown;
+}

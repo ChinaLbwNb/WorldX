@@ -18,6 +18,7 @@ import simulationRoutes from "./api/routes/simulation.js";
 import godRoutes from "./api/routes/god.js";
 import sandboxChatRoutes from "./api/routes/sandbox-chat.js";
 import timelineRoutes from "./api/routes/timeline.js";
+import buildRoutes from "./api/routes/build.js";
 import { resolveInitialWorldDir } from "./utils/world-directories.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -106,6 +107,7 @@ async function main() {
   app.use("/api/god", requireWorld, godRoutes);
   app.use("/api/sandbox/chat", requireWorld, sandboxChatRoutes);
   app.use("/api/timelines", timelineRoutes);
+  app.use("/api/build", requireWorld, buildRoutes);
 
   app.use("/assets/map", createWorldAssetHandler("map"));
   app.use("/assets/characters", createWorldAssetHandler("characters"));

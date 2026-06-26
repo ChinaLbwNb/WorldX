@@ -773,6 +773,64 @@ export class CharacterSprite extends Phaser.GameObjects.Container {
     this.idleTween?.resume();
   }
 
+  /**
+   * Try to switch from circle fallback to sprite body if the texture
+   * has become available (e.g. loaded asynchronously after construction).
+   * Returns true if the switch happened.
+   */
+  tryUpgradeToSprite(): boolean {
+    if (this.hasSprite) return false;
+    if (!this.scene.textures.exists(this.characterId)) return false;
+
+    console.log(`[CharacterSprite] Upgrading ${this.characterId} from circle to sprite`);
+    this.hasSprite = true;
+
+    // Recreate shadow with sprite dimensions
+    this.shadow.width = this.displayMetrics.shadowWidth;
+    this.shadow.height = this.displayMetrics.shadowHeight;
+    this.shadow.y = this.displayMetrics.shadowOffsetY;
+
+    // Destroy old circle body
+    if (this.idleTween) {
+      this.idleTween.stop();
+      this.idleTween = null;
+    }
+    if (this.walkTween) {
+      this.walkTween.stop();
+      this.walkTween = null;
+    }
+    this.bodyCircle?.destroy();
+    this.bodyCircle = null;
+
+    // Create sprite body
+    this.createSpriteBody();
+
+    // Re-add bodyContainer to the container at the correct position
+    // (it's already in this.add([...]) from createVisuals, we just
+    // need to reorder to keep shadow under the body)
+    this.bringToTop(this.bodyContainer);
+
+    // Update hit area
+    const hitW = this.displayMetrics.hitWidth;
+    const hitH = this.displayMetrics.hitHeight;
+    const hitTopY = this.displayMetrics.hitTopY;
+    this.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(-hitW / 2, hitTopY, hitW, hitH),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true,
+    });
+
+    // Update bubble anchor
+    this.bubbleContainer.setY(this.displayMetrics.bubbleOffsetY);
+    this.osBubbleContainer.setY(this.displayMetrics.bubbleOffsetY);
+    this.updateOsBubblePosition();
+
+    // Update DOM label position
+    this.updateDomLabelPosition();
+
+    return true;
+  }
+
   enableClick(callback: (charId: string) => void): void {
     this.on("pointerdown", () => callback(this.characterId));
     this.on("pointerover", () => {

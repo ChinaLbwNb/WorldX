@@ -13,6 +13,8 @@ import type {
   TimelineMeta,
   TimelineWithWorld,
   TimelineFrame,
+  BuildState,
+  BuildJobStatus,
 } from "../../types/api";
 
 const API_BASE = "/api";
@@ -409,5 +411,35 @@ export const apiClient = {
     return deleteJSON(
       `/timelines/world/${encodeURIComponent(worldId)}/${encodeURIComponent(timelineId)}`,
     );
+  },
+
+  // --- Build System APIs ---
+
+  getBuildState(): Promise<BuildState> {
+    return fetchJSON("/build/state");
+  },
+
+  collectResource(objectId: string): Promise<{ success: boolean; resources: number; amount: number; reason?: string }> {
+    return postJSON("/build/collect", { objectId });
+  },
+
+  movePlayer(pixelX: number, pixelY: number): Promise<{ ok: boolean; playerState: { pixelX: number; pixelY: number } }> {
+    return postJSON("/build/player/move", { pixelX, pixelY });
+  },
+
+  buildCharacter(prompt: string): Promise<{ ok: boolean; jobId: string }> {
+    return postJSON("/build/character", { prompt });
+  },
+
+  getCharacterBuildJob(jobId: string): Promise<BuildJobStatus> {
+    return fetchJSON(`/build/character/jobs/${encodeURIComponent(jobId)}`);
+  },
+
+  expandMap(direction: "north" | "south" | "east" | "west"): Promise<{ ok: boolean; jobId: string }> {
+    return postJSON("/build/map/expand", { direction });
+  },
+
+  getMapExpandJob(jobId: string): Promise<BuildJobStatus> {
+    return fetchJSON(`/build/map/jobs/${encodeURIComponent(jobId)}`);
   },
 };
