@@ -66,8 +66,8 @@ That's all it takes. WorldX handles the rest.
 Just want to see WorldX in action? Two pre-built worlds are included. You only need a **Simulation** model key.
 
 ```bash
-git clone https://github.com/ChinaLbwNb/xworld.git
-cd xworld
+git clone https://github.com/ChinaLbwNb/worldx.git
+cd worldx
 cp .env.example .env
 # Edit .env — fill in SIMULATION_* fields only
 npm install

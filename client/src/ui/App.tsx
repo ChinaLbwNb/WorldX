@@ -141,19 +141,7 @@ function AuthRequiredScreen({
               textShadow: "0 20px 60px rgba(0,0,0,0.45)",
             }}
           >
-            <span style={{ color: "rgb(104, 39, 230)" }}>X</span>World
-          </div>
-          <div
-            style={{
-              marginTop: 18,
-              fontSize: "clamp(20px, 3vw, 34px)",
-              lineHeight: 1.15,
-              fontWeight: 700,
-              letterSpacing: 0,
-              color: "rgba(238,244,255,0.9)",
-            }}
-          >
-            Redefine your world
+            World<span style={{ color: "rgb(56, 189, 248)" }}>X</span>
           </div>
           <div
             style={{
@@ -339,7 +327,7 @@ function AuthWorldCarousel() {
           position: "absolute",
           inset: 0,
           background:
-            "radial-gradient(circle at 70% 34%, rgba(104,39,230,0.20), transparent 34%), linear-gradient(180deg, rgba(3,5,12,0.16), rgba(3,5,12,0.72))",
+            "radial-gradient(circle at 70% 34%, rgba(56,189,248,0.20), transparent 34%), linear-gradient(180deg, rgba(3,5,12,0.16), rgba(3,5,12,0.72))",
         }}
       />
       {slides.length > 0 && (
@@ -366,7 +354,7 @@ function AuthWorldCarousel() {
                   width: index === activeIndex ? 18 : 6,
                   height: 6,
                   borderRadius: 999,
-                  background: index === activeIndex ? "rgb(104, 39, 230)" : "rgba(238,244,255,0.38)",
+                  background: index === activeIndex ? "rgb(56, 189, 248)" : "rgba(238,244,255,0.38)",
                   transition: "width 220ms ease, background 220ms ease",
                 }}
               />

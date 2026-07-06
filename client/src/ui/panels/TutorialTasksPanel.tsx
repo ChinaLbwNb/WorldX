@@ -239,7 +239,7 @@ const hudProgressTrackStyle: CSSProperties = {
 const hudProgressFillStyle: CSSProperties = {
   height: "100%",
   borderRadius: 999,
-  background: "linear-gradient(90deg, rgba(104,39,230,0.96), rgba(116,185,255,0.96))",
+  background: "linear-gradient(90deg, rgba(56,189,248,0.96), rgba(116,185,255,0.96))",
   transition: "width 0.24s ease",
 };
 
@@ -297,7 +297,7 @@ const progressTrackStyle: CSSProperties = {
 const progressFillStyle: CSSProperties = {
   height: "100%",
   borderRadius: 999,
-  background: "linear-gradient(90deg, rgba(104,39,230,0.95), rgba(116,185,255,0.95))",
+  background: "linear-gradient(90deg, rgba(56,189,248,0.95), rgba(116,185,255,0.95))",
   transition: "width 0.24s ease",
 };
 

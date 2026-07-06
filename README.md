@@ -80,8 +80,8 @@ NPC 会在这个世界里自主生活：他们做决策、与场景交互、建�
 想先看看效果？项目内置了两个预生成的世界，配置 **世界驱动** 模型的大模型即可运行。
 
 ```bash
-git clone https://github.com/ChinaLbwNb/xworld.git
-cd xworld
+git clone https://github.com/ChinaLbwNb/worldx.git
+cd worldx
 cp .env.example .env
 # 编辑 .env —— 只填 SIMULATION\_\* 三行即可
 npm install
@@ -299,7 +299,7 @@ WorldX/
 默认情况下，账号库、生成世界、账号素材和生成中间产物会写入 `output/`。部署或迁移时建议设置 `WORLDX_DATA_DIR`，把运行数据放到项目目录外部：
 
 ```bash
-WORLDX_DATA_DIR=C:/xworld-data npm run dev
+WORLDX_DATA_DIR=C:/worldx-data npm run dev
 ```
 
 内置示例世界保留在 `library/worlds/`，不会被数据清理脚本删除。

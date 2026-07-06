@@ -34,8 +34,8 @@ export interface CharacterDisplayMetrics {
   labelMbtiWorldSize: number;
   labelIconWorldSize: number;
   labelGapWorld: number;
-  labelMbtiPadXWorld: number;
-  labelMbtiPadYWorld: number;
+  labelMbtiPadWorldX: number;
+  labelMbtiPadWorldY: number;
   sortFootYOffset: number;
 }
 
@@ -78,8 +78,8 @@ export function createCharacterDisplayMetrics(
     labelMbtiWorldSize: spriteWidth * 0.20,
     labelIconWorldSize: spriteWidth * 0.21,
     labelGapWorld: spriteWidth * 0.07,
-    labelMbtiPadXWorld: spriteWidth * 0.14,
-    labelMbtiPadYWorld: spriteWidth * 0.045,
+    labelMbtiPadWorldX: spriteWidth * 0.14,
+    labelMbtiPadWorldY: spriteWidth * 0.045,
     sortFootYOffset: spriteHeight * 0.16,
   };
 }

@@ -2,7 +2,7 @@
   "name": "worldx",
   "version": "0.1.0",
   "private": true,
-  "repository": "https://github.com/ChinaLbwNb/xworld.git",
+  "repository": "https://github.com/ChinaLbwNb/worldx.git",
   "type": "module",
   "scripts": {
     "postinstall": "cd client && npm install && cd ../server && npm install && cd ../orchestrator && npm install && cd ../generators && npm install",

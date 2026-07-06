@@ -977,10 +977,10 @@ function dockToggleStyle(active: boolean): CSSProperties {
     borderRadius: 22,
     border: active ? "1px solid rgba(116,185,255,0.5)" : darkGlassSubtlePanelStyle.border,
     background: active
-      ? "linear-gradient(180deg, rgba(116,185,255,0.24), rgba(104,39,230,0.18))"
+      ? "linear-gradient(180deg, rgba(116,185,255,0.24), rgba(56,189,248,0.18))"
       : darkGlassSubtlePanelStyle.background,
     color: "#eef4ff",
-    boxShadow: active ? "0 12px 36px rgba(104,39,230,0.24)" : darkGlassSubtlePanelStyle.boxShadow,
+    boxShadow: active ? "0 12px 36px rgba(56,189,248,0.24)" : darkGlassSubtlePanelStyle.boxShadow,
     cursor: "pointer",
     backdropFilter: darkGlassSubtlePanelStyle.backdropFilter,
     WebkitBackdropFilter: darkGlassSubtlePanelStyle.WebkitBackdropFilter,
