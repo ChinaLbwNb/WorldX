@@ -11,8 +11,12 @@ import type {
   GameTime,
   DialogueSession,
   SceneConfig,
+  WorldMapNodeConfig,
+  WorldMapLinkConfig,
+  MapSpawnPointConfig,
+  WorldConfig,
 } from "../types/index.js";
-import { loadWorldConfig, loadSceneConfig, setWorldDir, getWorldDir } from "../utils/config-loader.js";
+import { loadWorldConfig, loadSceneConfig, setWorldDir, getWorldDir, reloadConfigs } from "../utils/config-loader.js";
 import { setSceneConfig, isSceneComplete, getTicksPerScene } from "../utils/time-helpers.js";
 import * as worldState from "../store/world-state-store.js";
 import * as snapshotStore from "../store/snapshot-store.js";
@@ -36,6 +40,7 @@ const MAIN_AREA_POINT_ADJACENCY_MULTIPLIER = parseFloat(
 const MAIN_AREA_POINT_PATH_DETOUR_MULTIPLIER = parseFloat(
   process.env.MAIN_AREA_POINT_PATH_DETOUR_MULTIPLIER || "2.5",
 );
+const ORIGIN_MAP_ID = "map_origin";
 
 export interface TickAdvanceResult {
   previousTime: GameTime;
@@ -45,6 +50,13 @@ export interface TickAdvanceResult {
 }
 
 export type MainAreaZone = "东" | "南" | "西" | "北" | "中";
+export interface MapNodesState {
+  currentWorldId: string;
+  activeMapId: string;
+  mapNodes: WorldMapNodeConfig[];
+  links: WorldMapLinkConfig[];
+  currentPlayerMapId: string;
+}
 
 export class WorldManager {
   private locationConfigs: LocationConfig[] = [];
@@ -53,12 +65,19 @@ export class WorldManager {
   private mainAreaZoneMap: Map<string, MainAreaZone> = new Map();
   private worldActions: WorldActionConfig[] = [];
   private worldSize: WorldSizeConfig | null = null;
+  private collisionData: number[] | null = null;
+  private collisionGridWidth = 0;
+  private collisionGridHeight = 0;
   private sceneConfig!: SceneConfig;
   private worldName = "unknown";
   private worldDescription = "";
   private worldSocialContext = "";
   private contentLanguage: "zh" | "en" = "zh";
   private originalPrompt = "";
+  private activeMapId = ORIGIN_MAP_ID;
+  private mapNodes: WorldMapNodeConfig[] = [];
+  private mapLinks: WorldMapLinkConfig[] = [];
+  private mapSpawnPoints: MapSpawnPointConfig[] = [];
 
   constructor() {}
 
@@ -66,19 +85,28 @@ export class WorldManager {
     if (worldDirPath) {
       setWorldDir(worldDirPath);
     }
+    this.ensureMapWorldInitialized();
     const config = loadWorldConfig();
+    this.activeMapId = this.resolveActiveMapId(config);
+    this.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
+    this.mapLinks = normalizeMapLinks(config.mapLinks);
+    this.mapSpawnPoints = normalizeMapSpawnPoints(config.mapSpawnPoints);
+    const activeFragment = this.loadActiveMapFragment();
+    const runtimeConfig = mergeWorldConfigForActiveMap(config, activeFragment);
     this.locationConfigs = normalizeLocations(
-      config.locations,
-      config.worldName ?? "main_area",
-      config.worldDescription ?? "",
+      runtimeConfig.locations,
+      runtimeConfig.worldName ?? "main_area",
+      runtimeConfig.worldDescription ?? "",
     );
     this.mainAreaPoints = rebuildMainAreaPointAdjacencyFromTmj(
-      normalizeMainAreaPoints(config.mainAreaPoints),
+      normalizeMainAreaPoints(runtimeConfig.mainAreaPoints),
+      this.getActiveMapDir(),
     );
     this.preferredMainAreaPointIds = getLargestMainAreaPointComponent(this.mainAreaPoints);
     this.mainAreaZoneMap = computeMainAreaZones(this.mainAreaPoints);
-    this.worldSize = normalizeWorldSize(config.worldSize) ?? inferWorldSizeFromWorldDir();
-    this.worldActions = config.worldActions ?? [];
+    this.worldSize = normalizeWorldSize(runtimeConfig.worldSize) ?? inferWorldSizeFromWorldDir(this.getActiveMapDir());
+    this.loadCollisionGrid();
+    this.worldActions = runtimeConfig.worldActions ?? [];
     this.worldName = config.worldName ?? "unknown";
     this.worldDescription = config.worldDescription ?? "";
     this.worldSocialContext = buildWorldSocialContext(
@@ -191,6 +219,72 @@ export class WorldManager {
 
   getAllLocations(): LocationConfig[] {
     return this.locationConfigs;
+  }
+
+  getActiveMapId(): string {
+    return this.activeMapId;
+  }
+
+  getMapNodesState(): MapNodesState {
+    const worldDir = getWorldDir();
+    return {
+      currentWorldId: worldDir ? path.basename(worldDir) : "",
+      activeMapId: this.activeMapId,
+      mapNodes: this.mapNodes,
+      links: this.mapLinks,
+      currentPlayerMapId: this.activeMapId,
+    };
+  }
+
+  getActiveMapDir(): string | null {
+    return this.getMapDir(this.activeMapId);
+  }
+
+  getMapDir(mapId: string): string | null {
+    const worldDir = getWorldDir();
+    if (!worldDir || !isSafeMapId(mapId)) return null;
+    const mapNode = this.mapNodes.find((map) => map.id === mapId);
+    const mapDirName = mapNode?.mapDir || mapId;
+    const mapDir = path.join(worldDir, "maps", mapDirName);
+    if (fs.existsSync(mapDir)) return mapDir;
+    if (mapId === ORIGIN_MAP_ID) {
+      const legacyMapDir = path.join(worldDir, "map");
+      if (fs.existsSync(legacyMapDir)) return legacyMapDir;
+    }
+    return mapDir;
+  }
+
+  getActiveMapAssetPrefix(): string {
+    return `/assets/maps/${encodeURIComponent(this.activeMapId)}`;
+  }
+
+  appendMapNode(
+    map: WorldMapNodeConfig,
+    spawnPoint?: MapSpawnPointConfig,
+    link?: WorldMapLinkConfig,
+  ): void {
+    this.updateWorldConfig((config) => {
+      const maps = normalizeMapNodes(config, config.worldName ?? "初始地图");
+      if (maps.some((candidate) => candidate.id === map.id)) {
+        throw new Error(`Map already exists: ${map.id}`);
+      }
+      const occupied = new Set(maps.map((candidate) => `${candidate.gridX},${candidate.gridY}`));
+      if (occupied.has(`${map.gridX},${map.gridY}`)) {
+        throw new Error(`Map grid slot already exists: ${map.gridX},${map.gridY}`);
+      }
+      config.mapNodes = [...maps, map];
+      if (link) {
+        config.mapLinks = [...normalizeMapLinks(config.mapLinks), link];
+      }
+      if (spawnPoint) {
+        config.mapSpawnPoints = [...normalizeMapSpawnPoints(config.mapSpawnPoints), spawnPoint];
+      }
+    });
+    reloadConfigs();
+    const config = loadWorldConfig();
+    this.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
+    this.mapLinks = normalizeMapLinks(config.mapLinks);
+    this.mapSpawnPoints = normalizeMapSpawnPoints(config.mapSpawnPoints);
   }
 
   getMainAreaPoints(): MainAreaPointConfig[] {
@@ -566,6 +660,341 @@ export class WorldManager {
     return snapshotStore.listSnapshots();
   }
 
+  /** 检查像素坐标是否可行走 */
+  isPixelWalkable(pixelX: number, pixelY: number): boolean {
+    if (!this.collisionData || !this.worldSize?.tileSize) {
+      // 没有碰撞数据时默认所有位置都可行走
+      return true;
+    }
+    const tileSize = this.worldSize.tileSize;
+    const gx = Math.floor(pixelX / tileSize);
+    const gy = Math.floor(pixelY / tileSize);
+    if (gx < 0 || gy < 0 || gx >= this.collisionGridWidth || gy >= this.collisionGridHeight) {
+      return false;
+    }
+    return this.collisionData[gy * this.collisionGridWidth + gx] === 0;
+  }
+
+  getTileSize(): number {
+    return this.worldSize?.tileSize && Number.isFinite(this.worldSize.tileSize)
+      ? this.worldSize.tileSize
+      : 32;
+  }
+
+  validatePlacementFootprint(
+    pixelX: number,
+    pixelY: number,
+    footprintTiles: { width: number; height: number } = { width: 1, height: 1 },
+  ): {
+    ok: boolean;
+    tileX: number;
+    tileY: number;
+    checkedTiles: Array<{ gx: number; gy: number; walkable: boolean }>;
+    issues: string[];
+  } {
+    const tileSize = this.getTileSize();
+    const tileX = Math.floor(pixelX / tileSize);
+    const tileY = Math.floor(pixelY / tileSize);
+    const width = Math.max(1, Math.min(16, Math.floor(footprintTiles.width || 1)));
+    const height = Math.max(1, Math.min(16, Math.floor(footprintTiles.height || 1)));
+    const startX = tileX - Math.floor((width - 1) / 2);
+    const startY = tileY - Math.floor((height - 1) / 2);
+    const checkedTiles: Array<{ gx: number; gy: number; walkable: boolean }> = [];
+    const issues: string[] = [];
+
+    if (!Number.isFinite(pixelX) || !Number.isFinite(pixelY)) {
+      return { ok: false, tileX, tileY, checkedTiles, issues: ["Placement coordinate must be finite."] };
+    }
+
+    for (let dy = 0; dy < height; dy++) {
+      for (let dx = 0; dx < width; dx++) {
+        const gx = startX + dx;
+        const gy = startY + dy;
+        const walkable = this.isTileWalkable(gx, gy);
+        checkedTiles.push({ gx, gy, walkable });
+        if (!walkable) {
+          issues.push(`Tile ${gx},${gy} is blocked or outside the map.`);
+        }
+      }
+    }
+
+    return {
+      ok: issues.length === 0,
+      tileX,
+      tileY,
+      checkedTiles,
+      issues,
+    };
+  }
+
+  /** 在中心点附近寻找一个可行走的像素点（螺旋搜索） */
+  findWalkablePixelNear(centerX: number, centerY: number, maxRadiusPx = 200): { x: number; y: number } | null {
+    if (!this.collisionData || !this.worldSize?.tileSize) {
+      return { x: centerX, y: centerY };
+    }
+
+    const tileSize = this.worldSize.tileSize;
+    const centerGx = Math.floor(centerX / tileSize);
+    const centerGy = Math.floor(centerY / tileSize);
+    const radiusTiles = Math.ceil(maxRadiusPx / tileSize);
+
+    // 螺旋搜索：从中心向外扩展
+    for (let r = 0; r <= radiusTiles; r++) {
+      // 顶部行
+      for (let dx = -r; dx <= r; dx++) {
+        const gx = centerGx + dx;
+        const gy = centerGy - r;
+        if (this.isTileWalkable(gx, gy)) {
+          return {
+            x: gx * tileSize + tileSize / 2,
+            y: gy * tileSize + tileSize / 2,
+          };
+        }
+      }
+      // 底部行
+      for (let dx = -r; dx <= r; dx++) {
+        const gx = centerGx + dx;
+        const gy = centerGy + r;
+        if (this.isTileWalkable(gx, gy)) {
+          return {
+            x: gx * tileSize + tileSize / 2,
+            y: gy * tileSize + tileSize / 2,
+          };
+        }
+      }
+      // 左侧列（排除已检查的上下角）
+      for (let dy = -r + 1; dy < r; dy++) {
+        const gx = centerGx - r;
+        const gy = centerGy + dy;
+        if (this.isTileWalkable(gx, gy)) {
+          return {
+            x: gx * tileSize + tileSize / 2,
+            y: gy * tileSize + tileSize / 2,
+          };
+        }
+      }
+      // 右侧列（排除已检查的上下角）
+      for (let dy = -r + 1; dy < r; dy++) {
+        const gx = centerGx + r;
+        const gy = centerGy + dy;
+        if (this.isTileWalkable(gx, gy)) {
+          return {
+            x: gx * tileSize + tileSize / 2,
+            y: gy * tileSize + tileSize / 2,
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /** 获取 main_area 的中心像素坐标 */
+  getMainAreaCenterPixel(): { x: number; y: number } {
+    if (!this.worldSize) {
+      return { x: 0, y: 0 };
+    }
+    return {
+      x: this.worldSize.width / 2,
+      y: this.worldSize.height / 2,
+    };
+  }
+
+  private isTileWalkable(gx: number, gy: number): boolean {
+    if (!this.collisionData) return true;
+    if (gx < 0 || gy < 0 || gx >= this.collisionGridWidth || gy >= this.collisionGridHeight) {
+      return false;
+    }
+    return this.collisionData[gy * this.collisionGridWidth + gx] === 0;
+  }
+
+  private loadCollisionGrid(): void {
+    const mapDir = this.getActiveMapDir();
+    if (!mapDir) return;
+
+    const tmjPath = path.join(mapDir, "06-final.tmj");
+    if (!fs.existsSync(tmjPath)) return;
+
+    try {
+      const raw = fs.readFileSync(tmjPath, "utf-8");
+      const tmj = JSON.parse(raw) as {
+        width?: number;
+        height?: number;
+        tilewidth?: number;
+        layers?: Array<{ name?: string; data?: unknown }>;
+      };
+      const gridWidth = Number(tmj.width);
+      const gridHeight = Number(tmj.height);
+      const collisionData = tmj.layers?.find((layer) => layer.name === "collision")?.data;
+
+      if (
+        !Number.isFinite(gridWidth) ||
+        !Number.isFinite(gridHeight) ||
+        !Array.isArray(collisionData) ||
+        collisionData.length !== gridWidth * gridHeight
+      ) {
+        return;
+      }
+
+      this.collisionData = collisionData as number[];
+      this.collisionGridWidth = gridWidth;
+      this.collisionGridHeight = gridHeight;
+
+      // Also update worldSize to match new dimensions
+      const tileSize = Number(tmj.tilewidth);
+      if (Number.isFinite(tileSize) && this.worldSize) {
+        this.worldSize = {
+          ...this.worldSize,
+          width: gridWidth * tileSize,
+          height: gridHeight * tileSize,
+          tileSize,
+          gridWidth,
+          gridHeight,
+        };
+      }
+    } catch (error) {
+      console.warn("[WorldManager] Failed to load collision grid:", error);
+    }
+  }
+
+  /**
+   * Reload active map data after travel or map-node generation.
+   *
+   * This performs a full reload of all world config that may have changed:
+   * 1. Invalidate cached world.json and re-read it
+   * 2. Re-normalize active-map locations
+   * 3. Rebuild main area point adjacency graph
+   * 4. Reload collision grid and world size from the active map TMJ
+   */
+  reloadActiveMapData(): void {
+    console.log("[WorldManager] Reloading active map data...");
+
+    // 1. Invalidate config cache so world.json is re-read from disk
+    reloadConfigs();
+
+    // 2. Re-load world config
+    const config = loadWorldConfig();
+    this.activeMapId = this.resolveActiveMapId(config);
+    this.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
+    this.mapLinks = normalizeMapLinks(config.mapLinks);
+    this.mapSpawnPoints = normalizeMapSpawnPoints(config.mapSpawnPoints);
+    const activeFragment = this.loadActiveMapFragment();
+    const runtimeConfig = mergeWorldConfigForActiveMap(config, activeFragment);
+
+    // 3. Re-normalize active-map locations
+    this.locationConfigs = normalizeLocations(
+      runtimeConfig.locations,
+      runtimeConfig.worldName ?? "main_area",
+      runtimeConfig.worldDescription ?? "",
+    );
+
+    // 4. Rebuild main area point adjacency
+    this.mainAreaPoints = rebuildMainAreaPointAdjacencyFromTmj(
+      normalizeMainAreaPoints(runtimeConfig.mainAreaPoints),
+      this.getActiveMapDir(),
+    );
+    this.preferredMainAreaPointIds = getLargestMainAreaPointComponent(this.mainAreaPoints);
+    this.mainAreaZoneMap = computeMainAreaZones(this.mainAreaPoints);
+
+    // 5. Reload collision grid + world size from active map TMJ
+    this.worldSize = normalizeWorldSize(runtimeConfig.worldSize) ?? inferWorldSizeFromWorldDir(this.getActiveMapDir());
+    this.loadCollisionGrid();
+
+    // 6. Update world actions/metadata in case they changed
+    this.worldActions = runtimeConfig.worldActions ?? [];
+
+    console.log(
+      `[WorldManager] World reloaded: ${this.collisionGridWidth}x${this.collisionGridHeight} tiles, ` +
+      `${this.worldSize?.width}x${this.worldSize?.height}px, ` +
+      `${this.locationConfigs.length} locations, ${this.mainAreaPoints.length} main area points`,
+    );
+  }
+
+  /** @deprecated Use reloadActiveMapData. */
+  reloadAfterExpansion(): void {
+    this.reloadActiveMapData();
+  }
+
+  private ensureMapWorldInitialized(): void {
+    const worldDir = getWorldDir();
+    if (!worldDir) return;
+    const worldJsonPath = findWorldJsonPath(worldDir);
+    if (!fs.existsSync(worldJsonPath)) return;
+    const config = JSON.parse(fs.readFileSync(worldJsonPath, "utf-8")) as WorldConfig;
+    const mapsRoot = path.join(worldDir, "maps");
+    const originDir = path.join(mapsRoot, ORIGIN_MAP_ID);
+    fs.mkdirSync(originDir, { recursive: true });
+
+    const legacyMapDir = path.join(worldDir, "map");
+    copyOriginMapFiles(legacyMapDir, originDir);
+
+    const originFragmentPath = path.join(originDir, "world-fragment.json");
+    if (!fs.existsSync(originFragmentPath)) {
+      const fragment: Partial<WorldConfig> = {
+        locations: config.locations ?? [],
+        mainAreaPoints: config.mainAreaPoints ?? [],
+        worldSize: config.worldSize,
+        worldActions: config.worldActions,
+      };
+      fs.writeFileSync(originFragmentPath, `${JSON.stringify(fragment, null, 2)}\n`, "utf-8");
+    }
+
+    const metadataPath = path.join(originDir, "metadata.json");
+    if (!fs.existsSync(metadataPath)) {
+      const metadata = {
+        id: ORIGIN_MAP_ID,
+        name: config.worldName || "初始地图",
+        createdAt: new Date().toISOString(),
+        source: "legacy-origin",
+      };
+      fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf-8");
+    }
+
+    const changed =
+      config.activeMapId !== ORIGIN_MAP_ID ||
+      !Array.isArray(config.mapNodes) ||
+      config.mapNodes.length === 0 ||
+      !Array.isArray(config.mapLinks) ||
+      !Array.isArray(config.mapSpawnPoints);
+    if (changed) {
+      config.activeMapId = config.activeMapId || ORIGIN_MAP_ID;
+      config.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
+      config.mapLinks = normalizeMapLinks(config.mapLinks);
+      config.mapSpawnPoints = normalizeMapSpawnPoints(config.mapSpawnPoints);
+      fs.writeFileSync(worldJsonPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+      reloadConfigs();
+    }
+  }
+
+  private resolveActiveMapId(config: WorldConfig): string {
+    const maps = normalizeMapNodes(config, config.worldName ?? "初始地图");
+    const activeMapId = config.activeMapId || ORIGIN_MAP_ID;
+    return maps.some((map) => map.id === activeMapId) ? activeMapId : ORIGIN_MAP_ID;
+  }
+
+  private loadActiveMapFragment(): Partial<WorldConfig> | null {
+    const mapDir = this.getActiveMapDir();
+    if (!mapDir) return null;
+    const fragmentPath = path.join(mapDir, "world-fragment.json");
+    if (!fs.existsSync(fragmentPath)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(fragmentPath, "utf-8")) as Partial<WorldConfig>;
+    } catch (error) {
+      console.warn(`[WorldManager] Failed to parse active map fragment: ${fragmentPath}`, error);
+      return null;
+    }
+  }
+
+  private updateWorldConfig(mutator: (config: WorldConfig) => void): void {
+    const worldDir = getWorldDir();
+    if (!worldDir) throw new Error("No active world");
+    const worldJsonPath = findWorldJsonPath(worldDir);
+    const config = JSON.parse(fs.readFileSync(worldJsonPath, "utf-8")) as WorldConfig;
+    config.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
+    mutator(config);
+    fs.writeFileSync(worldJsonPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  }
+
   private findObjectConfig(objectId: string): ObjectConfig | undefined {
     for (const loc of this.locationConfigs) {
       const obj = loc.objects.find((o) => o.id === objectId);
@@ -682,13 +1111,15 @@ function normalizeMainAreaPoints(points: MainAreaPointConfig[] | undefined): Mai
 
 function rebuildMainAreaPointAdjacencyFromTmj(
   points: MainAreaPointConfig[],
+  mapDirOverride?: string | null,
 ): MainAreaPointConfig[] {
   if (points.length <= 1) return points;
 
   const worldDir = getWorldDir();
-  if (!worldDir) return points;
+  const tmjDir = mapDirOverride || (worldDir ? path.join(worldDir, "map") : null);
+  if (!tmjDir) return points;
 
-  const tmjPath = path.join(worldDir, "map", "06-final.tmj");
+  const tmjPath = path.join(tmjDir, "06-final.tmj");
   if (!fs.existsSync(tmjPath)) return points;
 
   try {
@@ -922,10 +1353,11 @@ function normalizeWorldSize(size: WorldSizeConfig | undefined): WorldSizeConfig 
   };
 }
 
-function inferWorldSizeFromWorldDir(): WorldSizeConfig | null {
+function inferWorldSizeFromWorldDir(mapDirOverride?: string | null): WorldSizeConfig | null {
   const worldDir = getWorldDir();
-  if (!worldDir) return null;
-  const tmjPath = path.join(worldDir, "map", "06-final.tmj");
+  const tmjDir = mapDirOverride || (worldDir ? path.join(worldDir, "map") : null);
+  if (!tmjDir) return null;
+  const tmjPath = path.join(tmjDir, "06-final.tmj");
   if (!fs.existsSync(tmjPath)) return null;
 
   try {
@@ -956,6 +1388,120 @@ function inferWorldSizeFromWorldDir(): WorldSizeConfig | null {
     console.warn("[WorldManager] Failed to infer world size from TMJ:", error);
     return null;
   }
+}
+
+function normalizeMapNodes(
+  config: Pick<WorldConfig, "mapNodes">,
+  originName: string,
+): WorldMapNodeConfig[] {
+  return normalizeMapNodeList(config.mapNodes, originName);
+}
+
+function normalizeMapNodeList(
+  maps: WorldMapNodeConfig[] | undefined,
+  originName: string,
+): WorldMapNodeConfig[] {
+  const normalized = Array.isArray(maps)
+    ? maps
+        .filter((map): map is WorldMapNodeConfig =>
+          !!map &&
+          typeof map.id === "string" &&
+          isSafeMapId(map.id) &&
+          typeof map.gridX === "number" &&
+          typeof map.gridY === "number",
+        )
+        .map((map): WorldMapNodeConfig => {
+          const status = map.status === "generating" || map.status === "failed" ? map.status : "available";
+          return {
+            ...map,
+            name: map.name || map.id,
+            status,
+            mapDir: isSafeMapId(map.mapDir) ? map.mapDir : map.id,
+            previewImage: map.previewImage || "background-preview.png",
+            createdAt: map.createdAt || new Date().toISOString(),
+          };
+        })
+    : [];
+  if (normalized.some((map) => map.id === ORIGIN_MAP_ID)) {
+    return normalized;
+  }
+  return [
+    {
+      id: ORIGIN_MAP_ID,
+      name: originName || "初始地图",
+      gridX: 0,
+      gridY: 0,
+      status: "available",
+      mapDir: ORIGIN_MAP_ID,
+      previewImage: "background-preview.png",
+      defaultSpawnPointId: `${ORIGIN_MAP_ID}_spawn`,
+      createdAt: new Date().toISOString(),
+    },
+    ...normalized,
+  ];
+}
+
+function normalizeMapLinks(links: WorldMapLinkConfig[] | undefined): WorldMapLinkConfig[] {
+  if (!Array.isArray(links)) return [];
+  return links.filter((link): link is WorldMapLinkConfig =>
+    !!link &&
+    typeof link.fromMapId === "string" &&
+    typeof link.toMapId === "string",
+  );
+}
+
+function normalizeMapSpawnPoints(points: MapSpawnPointConfig[] | undefined): MapSpawnPointConfig[] {
+  if (!Array.isArray(points)) return [];
+  return points.filter((point): point is MapSpawnPointConfig =>
+    !!point &&
+    typeof point.mapId === "string" &&
+    typeof point.id === "string" &&
+    typeof point.x === "number" &&
+    typeof point.y === "number",
+  );
+}
+
+function mergeWorldConfigForActiveMap(
+  config: WorldConfig,
+  fragment: Partial<WorldConfig> | null,
+): WorldConfig {
+  if (!fragment) return config;
+  return {
+    ...config,
+    locations: Array.isArray(fragment.locations) ? fragment.locations : config.locations,
+    mainAreaPoints: Array.isArray(fragment.mainAreaPoints)
+      ? fragment.mainAreaPoints
+      : config.mainAreaPoints,
+    worldSize: fragment.worldSize || config.worldSize,
+    worldActions: Array.isArray(fragment.worldActions) ? fragment.worldActions : config.worldActions,
+  };
+}
+
+function copyOriginMapFiles(sourceDir: string, targetDir: string): void {
+  if (!fs.existsSync(sourceDir)) return;
+  const fileNames = ["06-background.png", "background-preview.png", "06-final.tmj"];
+  for (const fileName of fileNames) {
+    const source = path.join(sourceDir, fileName);
+    const target = path.join(targetDir, fileName);
+    if (fs.existsSync(source) && !fs.existsSync(target)) {
+      fs.copyFileSync(source, target);
+    }
+  }
+  const sourceTiles = path.join(sourceDir, "background-tiles");
+  const targetTiles = path.join(targetDir, "background-tiles");
+  if (fs.existsSync(sourceTiles) && !fs.existsSync(targetTiles)) {
+    fs.cpSync(sourceTiles, targetTiles, { recursive: true });
+  }
+}
+
+function isSafeMapId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function findWorldJsonPath(worldDir: string): string {
+  const rootPath = path.join(worldDir, "world.json");
+  if (fs.existsSync(rootPath)) return rootPath;
+  return path.join(worldDir, "config", "world.json");
 }
 
 function hashString(value: string): number {

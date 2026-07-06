@@ -774,7 +774,18 @@ export class CharacterSprite extends Phaser.GameObjects.Container {
   }
 
   enableClick(callback: (charId: string) => void): void {
-    this.on("pointerdown", () => callback(this.characterId));
+    this.on(
+      "pointerdown",
+      (
+        _pointer: Phaser.Input.Pointer,
+        _localX: number,
+        _localY: number,
+        event: Phaser.Types.Input.EventData,
+      ) => {
+        event.stopPropagation();
+        callback(this.characterId);
+      },
+    );
     this.on("pointerover", () => {
       if (this.bodyCircle) {
         this.bodyCircle.setStrokeStyle(this.displayMetrics.circleStrokeWidth, 0xffff00);

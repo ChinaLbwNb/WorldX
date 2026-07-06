@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import { generateMap } from "./steps/step1-generate-map.mjs";
@@ -13,27 +13,32 @@ import { buildOutput } from "./steps/step6-build-output.mjs";
 import { getImageSize } from "./utils/image-utils.mjs";
 import { initLogger, log } from "./utils/logger.mjs";
 import { getMapImageSizeLabel } from "./utils/generation-config.mjs";
+import { writeBackgroundTiles } from "./utils/background-tiles.mjs";
 import { normalizeWorldDesign } from "../../../orchestrator/src/world-design-utils.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORLD_SEED_ROOT = join(__dirname, "../../..");
 dotenv.config({ path: join(WORLD_SEED_ROOT, ".env") });
-const OUTPUT_DIR = process.env.MAP_OUTPUT_DIR || join(WORLD_SEED_ROOT, "output/maps");
+function resolveDataDir() {
+  const configured = process.env.WORLDX_DATA_DIR?.trim();
+  return configured ? resolve(WORLD_SEED_ROOT, configured) : join(WORLD_SEED_ROOT, "output");
+}
+
+const OUTPUT_DIR = process.env.MAP_OUTPUT_DIR || join(resolveDataDir(), "maps");
 const MAP_IMAGE_SIZE = getMapImageSizeLabel();
 
 installPhaseStepLogPrefix("Phase 2");
 
-async function main() {
-  const userPrompt = process.argv.slice(2).join(" ");
+export async function runMapPipeline(options = {}) {
+  const userPrompt = options.userPrompt || "";
   if (!userPrompt) {
-    console.error("Usage: node src/index.mjs \"地图描述\"");
-    process.exit(1);
+    throw new Error("userPrompt is required");
   }
 
-  const runId = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const runDir = join(OUTPUT_DIR, runId);
+  const runId = options.runId || new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const runDir = options.runDir || join(OUTPUT_DIR, runId);
   mkdirSync(runDir, { recursive: true });
-  const logDir = process.env.MAP_LOG_DIR || runDir;
+  const logDir = options.logDir || process.env.MAP_LOG_DIR || runDir;
   mkdirSync(logDir, { recursive: true });
 
   initLogger(logDir, process.env.MAP_LOG_FILE_NAME || "map-pipeline.log");
@@ -53,8 +58,10 @@ async function main() {
     return p;
   };
 
-  const worldDesignPath = process.env.WORLD_DESIGN_PATH || "";
-  const worldDesign = worldDesignPath && existsSync(worldDesignPath)
+  const worldDesignPath = options.worldDesignPath || process.env.WORLD_DESIGN_PATH || "";
+  const worldDesign = options.worldDesign
+    ? normalizeWorldDesign(options.worldDesign)
+    : worldDesignPath && existsSync(worldDesignPath)
     ? normalizeWorldDesign(JSON.parse(readFileSync(worldDesignPath, "utf-8")))
     : normalizeWorldDesign({
         mapDescription: userPrompt,
@@ -63,7 +70,7 @@ async function main() {
         mapPlan: {},
       });
 
-  const originalUserPrompt = process.env.ORIGINAL_USER_PROMPT || "";
+  const originalUserPrompt = options.originalUserPrompt || process.env.ORIGINAL_USER_PROMPT || "";
 
   try {
     // ── Step 1: Generate Map ──
@@ -79,6 +86,9 @@ async function main() {
     };
     if (!step1.reviewPassed) {
       warnings.push("Step 1: 地图生成 review 最终未通过");
+      if (options.requireStep1Review) {
+        throw new Error("Step 1 map visual review failed");
+      }
     }
 
     // ── Step 2: Compress ──
@@ -201,6 +211,7 @@ async function main() {
       .png()
       .toBuffer();
     save("06-background.png", bgBuffer);
+    const backgroundTiles = await writeBackgroundTiles(runDir, bgBuffer);
 
     const tmj = buildOutput({
       grid,
@@ -217,15 +228,23 @@ async function main() {
     save("06-elements-scaled.json", scaledElements);
 
     // Update runs list for viewer
-    const runsFile = join(OUTPUT_DIR, "runs.json");
-    let runs = [];
-    if (existsSync(runsFile)) {
-      try { runs = JSON.parse(readFileSync(runsFile, "utf-8")); } catch {}
+    if (options.updateRuns !== false) {
+      mkdirSync(OUTPUT_DIR, { recursive: true });
+      const runsFile = join(OUTPUT_DIR, "runs.json");
+      let runs = [];
+      if (existsSync(runsFile)) {
+        try { runs = JSON.parse(readFileSync(runsFile, "utf-8")); } catch {}
+      }
+      if (!runs.includes(runId)) runs.push(runId);
+      writeFileSync(runsFile, JSON.stringify(runs, null, 2));
     }
-    if (!runs.includes(runId)) runs.push(runId);
-    writeFileSync(runsFile, JSON.stringify(runs, null, 2));
 
     metadata.warnings = warnings;
+    metadata.backgroundTiles = {
+      manifest: "background-tiles/manifest.json",
+      count: backgroundTiles.tiles.length,
+      tileSize: backgroundTiles.tileSize,
+    };
     metadata.completedAt = new Date().toISOString();
     save("metadata.json", metadata);
 
@@ -243,17 +262,44 @@ async function main() {
     console.log(`\nTo view: open viewer/index.html in a browser`);
     console.log(`  (serve with: cd ai-world-test && npm run viewer)`);
     console.log("═══════════════════════════════════════════\n");
+    return {
+      ok: true,
+      runId,
+      runDir,
+      gridWidth,
+      gridHeight,
+      tileSize,
+      regions: regionResult.regions.length,
+      elements: elementResult.elements.length,
+      warnings,
+      metadata,
+    };
 
   } catch (err) {
     console.error("\n✗ Pipeline failed:", err);
     metadata.error = err.message;
     metadata.warnings = warnings;
     save("metadata.json", metadata);
+    throw err;
+  }
+}
+
+async function main() {
+  const userPrompt = process.argv.slice(2).join(" ");
+  if (!userPrompt) {
+    console.error("Usage: node src/index.mjs \"地图描述\"");
+    process.exit(1);
+  }
+  try {
+    await runMapPipeline({ userPrompt });
+  } catch {
     process.exit(1);
   }
 }
 
-main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main();
+}
 
 function installPhaseStepLogPrefix(phaseLabel) {
   for (const method of ["log", "warn", "error"]) {

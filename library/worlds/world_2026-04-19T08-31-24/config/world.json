@@ -487,5 +487,21 @@
     },
     "originalPrompt": "夜晚的宋朝繁华夜市，宽敞的石板路两边有各种小房子、小铺子，有当铺掌柜、算命先生、捕快、小偷、酒鬼、一个刚从现代穿越来的网红"
   },
-  "originalPrompt": "夜晚的宋朝繁华夜市，宽敞的石板路两边有各种小房子、小铺子，有当铺掌柜、算命先生、捕快、小偷、酒鬼、一个刚从现代穿越来的网红"
+  "originalPrompt": "夜晚的宋朝繁华夜市，宽敞的石板路两边有各种小房子、小铺子，有当铺掌柜、算命先生、捕快、小偷、酒鬼、一个刚从现代穿越来的网红",
+  "activeMapId": "map_origin",
+  "mapLinks": [],
+  "mapSpawnPoints": [],
+  "mapNodes": [
+    {
+      "id": "map_origin",
+      "name": "汴京夜肆",
+      "gridX": 0,
+      "gridY": 0,
+      "status": "available",
+      "mapDir": "map_origin",
+      "previewImage": "background-preview.png",
+      "defaultSpawnPointId": "map_origin_spawn",
+      "createdAt": "2026-06-27T16:52:49.701Z"
+    }
+  ]
 }

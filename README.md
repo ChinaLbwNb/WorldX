@@ -7,14 +7,14 @@
 </p>
 
 <p align="center">
-  <a href="./README_EN.md">English</a> | 中文
+  <a href="./README\_EN.md">English</a> | 中文
 </p>
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white" alt="Node.js 18+">
-  <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
-  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React 19">
+  <img src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js\&logoColor=white" alt="Node.js 18+">
+  <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript\&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react\&logoColor=black" alt="React 19">
   <img src="https://img.shields.io/badge/Phaser-3-cdf0e8?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJMMiAyMmgyMEwxMiAyeiIgZmlsbD0iIzMzMyIvPjwvc3ZnPg==" alt="Phaser 3">
   <img src="https://img.shields.io/badge/Status-Alpha-orange" alt="Alpha">
   <img src="https://img.shields.io/badge/PRs-Welcome-brightgreen.svg" alt="PRs Welcome">
@@ -24,15 +24,16 @@
   <code>AI Agents</code> · <code>LLM</code> · <code>Procedural Generation</code> · <code>Simulation</code> · <code>Emergent Narrative</code>
 </p>
 
----
+\---
 
 说出你的要求，**WorldX** 会为你构筑一个完整的虚拟世界。
-AI 角色们会在这个世界里自主生活：他们做决策、与场景交互、建立关系、开展对话、记忆并思考，涌现出没人提前写好剧本的故事。
-你也可以作为"上帝"随时介入 —— 注入事件、编辑角色记忆或人格，看整个世界因此走向何方。你也能与任意角色展开一场架空对话。
+NPC 会在这个世界里自主生活：他们做决策、与场景交互、建立关系、开展对话、记忆并思考，涌现出没人提前写好剧本的故事。
+你也可以作为"上帝"随时介入 —— 注入事件、编辑 NPC 记忆或人格，看整个世界因此走向何方。你也能与任意 NPC 展开一场架空对话。
 
 > "北宋汴京的夜市街，有算命的、当铺掌柜、小偷、捕快，还有一个穿越来的现代人"
 
 只需要这一句话，剩下的交给 WorldX。
+
 <table>
 <tr>
 <td align="center" valign="top" width="50%"><img src="docs/screenshot1.png" alt="WorldX: one-sentence world creation interface" width="400"/></td>
@@ -40,13 +41,13 @@ AI 角色们会在这个世界里自主生活：他们做决策、与场景交�
 </tr>
 <tr>
 <td align="center" valign="top" width="50%"><img src="docs/screenshot3.png" alt="WorldX: pixel world simulation with character dialogue sidebar" width="400"/></td>
-<td align="center" valign="top" width="50%"><img src="docs/screenshot2_en.png" alt="WorldX: one-sentence world creation interface" width="400"/></td>
+<td align="center" valign="top" width="50%"><img src="docs/screenshot2\_en.png" alt="WorldX: one-sentence world creation interface" width="400"/></td>
 </tr>
 </table>
 
 <p align="center">
   <a href="https://www.bilibili.com/video/BV1HNosBLEE5">
-    <img src="https://img.shields.io/badge/📺_观看演示视频-Bilibili-00A1D6?logo=bilibili&logoColor=white&style=for-the-badge" alt="Bilibili Demo Video">
+    <img src="https://img.shields.io/badge/📺\_观看演示视频-Bilibili-00A1D6?logo=bilibili\&logoColor=white\&style=for-the-badge" alt="Bilibili Demo Video">
   </a>
 </p>
 
@@ -54,14 +55,14 @@ AI 角色们会在这个世界里自主生活：他们做决策、与场景交�
 
 ## 特性
 
-- **一句话创造世界** —— 描述任何场景，看着它变为现实
-- **AI 生成地图与角色** —— 任何风格，完全按照你的要求生成，不是模板拼接
-- **自主 Agent 驱动** —— 生成的世界中，角色自主决策、建立关系、展开对话
-- **记忆与人格** —— 角色记住过去的经历，并据此形成独特的行为模式
-- **多日演化** —— 支持跨越昼夜循环持续演进
-- **上帝模式** —— 广播事件、编辑角色人设/记忆、与角色开展架空对话，观察世界中涌现出哪些有趣的发展
-- **时间线系统** —— 同一个世界也可孕育多个不同时间线
-- **中英双语** —— 双语支持
+* **一句话创造世界** —— 描述任何场景，看着它变为现实
+* **AI 生成地图与角色** —— 任何风格，完全按照你的要求生成，不是模板拼接
+* **自主 Agent 驱动** —— 生成的世界中，NPC 自主决策、建立关系、展开对话
+* **记忆与人格** —— 角色记住过去的经历，并据此形成独特的行为模式
+* **多日演化** —— 支持跨越昼夜循环持续演进
+* **上帝模式** —— 广播事件、编辑角色人设/记忆、与角色开展架空对话，观察世界中涌现出哪些有趣的发展
+* **时间线系统** —— 同一个世界也可孕育多个不同时间线
+* **中英双语** —— 双语支持
 
 <br>   
 
@@ -71,18 +72,18 @@ AI 角色们会在这个世界里自主生活：他们做决策、与场景交�
 
 ### 前置条件
 
-- **Node.js 18+**
-- **API Key** —— 详见下方 [模型配置](#模型配置)
+* **Node.js 18+**
+* **API Key** —— 详见下方 [模型配置](#模型配置)
 
 ### 方式 A：快速运行
 
 想先看看效果？项目内置了两个预生成的世界，配置 **世界驱动** 模型的大模型即可运行。
 
 ```bash
-git clone https://github.com/YGYOOO/WorldX.git
-cd WorldX
+git clone https://github.com/ChinaLbwNb/xworld.git
+cd xworld
 cp .env.example .env
-# 编辑 .env —— 只填 SIMULATION_* 三行即可
+# 编辑 .env —— 只填 SIMULATION\_\* 三行即可
 npm install
 npm run dev
 ```
@@ -111,48 +112,50 @@ npm run create -- "赛博朋克风格的深夜拉面馆，黑客和仿生人在�
 WorldX 使用 **4 个模型角色**，各自独立配置。除绘图模型支持 Google AI Studio 原生图片接口外，其余角色均采用 OpenAI 兼容的 `chat/completions` 协议。
 
 
-| 角色       | 环境变量前缀          | 用途             | 推荐模型                                      |
-| -------- | --------------- | -------------- | ----------------------------------------- |
-| **编排引擎** | `ORCHESTRATOR_` | 设计世界结构、角色、规则   | 较强推理模型（如 `gemini-3.1-pro-preview`）        |
-| **绘图模型** | `IMAGE_GEN_`    | 生成地图美术和角色立绘    | 文生图模型（如 `gemini-3.1-flash-image-preview`） |
-| **绘图审查** | `VISION_`       | 审查地图质量、定位区域/元素 | 多模态模型（如 `gemini-3.1-pro-preview`）         |
-| **世界驱动** | `SIMULATION_`   | 驱动运行时角色行为      | 任意模型，便宜的就行（如 `gemini-2.5-flash`）          |
+
+|角色|环境变量前缀|用途|推荐模型|
+|-|-|-|-|
+|**编排引擎**|`ORCHESTRATOR\_`|设计世界结构、NPC、规则|较强推理模型（如 `gemini-3.1-pro-preview`）|
+|**绘图模型**|`IMAGE\_GEN\_`|生成地图美术和角色立绘|文生图模型（如 `MaaS_Ge_2.5_flash_image_20251002`）|
+|**绘图审查**|`VISION\_`|审查地图质量、定位区域/元素|多模态模型（如 `gemini-3.1-pro-preview`）|
+|**世界驱动**|`SIMULATION\_`|驱动运行时 NPC 行为|任意模型，便宜的就行（如 `gemini-2.5-flash`）|
+
 
 
 每个角色通常需要 3 个环境变量：
 
 ```env
-{ROLE}_BASE_URL=https://openrouter.ai/api/v1    # API 地址
-{ROLE}_API_KEY=sk-or-v1-xxxx                     # API Key
-{ROLE}_MODEL=google/gemini-3.1-pro-preview       # 模型标识
+{ROLE}\_BASE\_URL=https://openrouter.ai/api/v1    # API 地址
+{ROLE}\_API\_KEY=sk-or-v1-xxxx                     # API Key
+{ROLE}\_MODEL=google/gemini-3.1-pro-preview       # 模型标识
 ```
 
-绘图模型可额外设置 `IMAGE_GEN_PROVIDER`，`IMAGE_GEN_PROVIDER` 可选 `openai-compatible`（默认，适合 OpenRouter）或 `google-native`（适合 Google AI Studio 图片生成）。
+绘图模型可额外设置 `IMAGE\_GEN\_PROVIDER`，`IMAGE\_GEN\_PROVIDER` 可选 `openai-compatible`（默认，适合 OpenRouter）或 `google-native`（适合 Google AI Studio 图片生成）。
 
 ### 平台配置示例
-图像生成模型建议使用nano banana2（gemini-3.1-flash-image），gpt-image-2在指令遵循上依然有欠缺（虽然画风显著比nb2好看），在本项目中容易导致各类问题、影响最终效果
+
 <details>
 <summary><strong>OpenRouter</strong>（一个 Key 搞定全部模型）</summary>
 
 在 [openrouter.ai](https://openrouter.ai) 获取 Key：
 
 ```env
-ORCHESTRATOR_BASE_URL=https://openrouter.ai/api/v1
-ORCHESTRATOR_API_KEY=sk-or-v1-xxxx
-ORCHESTRATOR_MODEL=google/gemini-3.1-pro-preview
+ORCHESTRATOR\_BASE\_URL=https://openrouter.ai/api/v1
+ORCHESTRATOR\_API\_KEY=sk-or-v1-xxxx
+ORCHESTRATOR\_MODEL=google/gemini-3.1-pro-preview
 
-IMAGE_GEN_BASE_URL=https://openrouter.ai/api/v1
-IMAGE_GEN_PROVIDER=openai-compatible
-IMAGE_GEN_API_KEY=sk-or-v1-xxxx
-IMAGE_GEN_MODEL=google/gemini-3.1-flash-image-preview
+IMAGE\_GEN\_BASE\_URL=https://openrouter.ai/api/v1
+IMAGE\_GEN\_PROVIDER=openai-compatible
+IMAGE\_GEN\_API\_KEY=sk-or-v1-xxxx
+IMAGE\_GEN\_MODEL=MaaS_Ge_2.5_flash_image_20251002
 
-VISION_BASE_URL=https://openrouter.ai/api/v1
-VISION_API_KEY=sk-or-v1-xxxx
-VISION_MODEL=google/gemini-3.1-pro-preview
+VISION\_BASE\_URL=https://openrouter.ai/api/v1
+VISION\_API\_KEY=sk-or-v1-xxxx
+VISION\_MODEL=google/gemini-3.1-pro-preview
 
-SIMULATION_BASE_URL=https://openrouter.ai/api/v1
-SIMULATION_API_KEY=sk-or-v1-xxxx
-SIMULATION_MODEL=google/gemini-2.5-flash-preview
+SIMULATION\_BASE\_URL=https://openrouter.ai/api/v1
+SIMULATION\_API\_KEY=sk-or-v1-xxxx
+SIMULATION\_MODEL=google/gemini-2.5-flash-preview
 ```
 
 </details>
@@ -163,22 +166,22 @@ SIMULATION_MODEL=google/gemini-2.5-flash-preview
 在 [aistudio.google.com](https://aistudio.google.com/apikey) 获取 Key：
 
 ```env
-ORCHESTRATOR_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-ORCHESTRATOR_API_KEY=AIzaSy...
-ORCHESTRATOR_MODEL=gemini-3.1-pro-preview
+ORCHESTRATOR\_BASE\_URL=https://generativelanguage.googleapis.com/v1beta/openai
+ORCHESTRATOR\_API\_KEY=AIzaSy...
+ORCHESTRATOR\_MODEL=gemini-3.1-pro-preview
 
-IMAGE_GEN_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-IMAGE_GEN_PROVIDER=google-native
-IMAGE_GEN_API_KEY=AIzaSy...
-IMAGE_GEN_MODEL=gemini-3.1-flash-image-preview
+IMAGE\_GEN\_BASE\_URL=https://generativelanguage.googleapis.com/v1beta/openai
+IMAGE\_GEN\_PROVIDER=google-native
+IMAGE\_GEN\_API\_KEY=AIzaSy...
+IMAGE\_GEN\_MODEL=MaaS_Ge_2.5_flash_image_20251002
 
-VISION_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-VISION_API_KEY=AIzaSy...
-VISION_MODEL=gemini-3.1-pro-preview
+VISION\_BASE\_URL=https://generativelanguage.googleapis.com/v1beta/openai
+VISION\_API\_KEY=AIzaSy...
+VISION\_MODEL=gemini-3.1-pro-preview
 
-SIMULATION_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-SIMULATION_API_KEY=AIzaSy...
-SIMULATION_MODEL=gemini-2.5-flash-preview
+SIMULATION\_BASE\_URL=https://generativelanguage.googleapis.com/v1beta/openai
+SIMULATION\_API\_KEY=AIzaSy...
+SIMULATION\_MODEL=gemini-2.5-flash-preview
 ```
 
 </details>
@@ -190,25 +193,25 @@ SIMULATION_MODEL=gemini-2.5-flash-preview
 
 ```env
 # 世界设计 — Google AI Studio
-ORCHESTRATOR_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-ORCHESTRATOR_API_KEY=AIzaSy...
-ORCHESTRATOR_MODEL=gemini-3.1-pro-preview
+ORCHESTRATOR\_BASE\_URL=https://generativelanguage.googleapis.com/v1beta/openai
+ORCHESTRATOR\_API\_KEY=AIzaSy...
+ORCHESTRATOR\_MODEL=gemini-3.1-pro-preview
 
 # 美术生成 — Google AI Studio
-IMAGE_GEN_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-IMAGE_GEN_PROVIDER=google-native
-IMAGE_GEN_API_KEY=AIzaSy...
-IMAGE_GEN_MODEL=gemini-3.1-flash-image-preview
+IMAGE\_GEN\_BASE\_URL=https://generativelanguage.googleapis.com/v1beta/openai
+IMAGE\_GEN\_PROVIDER=google-native
+IMAGE\_GEN\_API\_KEY=AIzaSy...
+IMAGE\_GEN\_MODEL=MaaS_Ge_2.5_flash_image_20251002
 
 # 视觉审查 — Google AI Studio
-VISION_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-VISION_API_KEY=AIzaSy...
-VISION_MODEL=gemini-3.1-pro-preview
+VISION\_BASE\_URL=https://generativelanguage.googleapis.com/v1beta/openai
+VISION\_API\_KEY=AIzaSy...
+VISION\_MODEL=gemini-3.1-pro-preview
 
 # 模拟运行 — DeepSeek（高频调用更划算）
-SIMULATION_BASE_URL=https://api.deepseek.com/v1
-SIMULATION_API_KEY=sk-...
-SIMULATION_MODEL=deepseek-chat
+SIMULATION\_BASE\_URL=https://api.deepseek.com/v1
+SIMULATION\_API\_KEY=sk-...
+SIMULATION\_MODEL=deepseek-chat
 ```
 
 </details>
@@ -222,6 +225,7 @@ SIMULATION_MODEL=deepseek-chat
 如果浏览器可以访问 OpenRouter / Google AI Studio，但运行 `npm run dev` 或创建世界时报 `This model is not available in your region`、`fetch failed`、`ETIMEDOUT`，通常是因为**浏览器走了代理，但 Node.js 进程没有走代理**。
 
 
+
 若代理软件不支持TUN/虚拟网卡/全局透明代理模式，可先查看本机代理端口：
 
 ```bash
@@ -232,23 +236,35 @@ scutil --proxy
 
 ```bash
 # 注意把下面的端口号替换成HTTPPort/HTTPSPort所示的端口号
-export HTTP_PROXY=http://127.0.0.1:7890
-export HTTPS_PROXY=http://127.0.0.1:7890
-export ALL_PROXY=socks5://127.0.0.1:7890
+export HTTP\_PROXY=http://127.0.0.1:7890
+export HTTPS\_PROXY=http://127.0.0.1:7890
+export ALL\_PROXY=socks5://127.0.0.1:7890
 
 npm run dev
 ```
 
 
 
-## 架构  
+## 架构
+
 <img src="docs/chart1.png"/>
 <img src="docs/chart2.png"/>
 
 ## 详细技术介绍
-https://zhuanlan.zhihu.com/p/2032410449854068566
+
+* [完整系统架构文档（主入口）](docs/architecture.md)
+* [WorldX 技术总览](docs/TECHNICAL_OVERVIEW.md)
+* [地图生成管线专题](docs/generation-pipeline.md)
+* [地图系统重构专题：独立地图 + 地图 UI 传送](docs/map-ui-travel-system.md)
+* [账号、世界与地图节点解耦专题](docs/account-world-map-decoupling.md)
+* [用户角色与 NPC 分离专题](docs/user-character-architecture.md)
+* [多人账户、角色交互与物品系统专题](docs/multiplayer-items-architecture.md)
+* [玩家 HUD 与 UI 游戏化改造专题](docs/player-ui-redesign.md)
+* [任务系统专题](docs/task-system-architecture.md)
+* [知乎长文](https://zhuanlan.zhihu.com/p/2032410449854068566)
 
 ## 项目结构
+
 ```
 WorldX/
 ├── orchestrator/         # LLM 驱动的世界设计与配置生成
@@ -274,8 +290,26 @@ WorldX/
 │       └── systems/      # 相机、寻路、回放
 ├── shared/               # 共享工具（结构化输出解析）
 ├── library/worlds/       # 内置示例世界
-├── output/worlds/        # 你生成的世界
+├── output/               # 本地运行数据（默认，不应随源码迁移）
 └── .env.example          # 配置模板
+```
+
+## 运行数据
+
+默认情况下，账号库、生成世界、账号素材和生成中间产物会写入 `output/`。部署或迁移时建议设置 `WORLDX_DATA_DIR`，把运行数据放到项目目录外部：
+
+```bash
+WORLDX_DATA_DIR=C:/xworld-data npm run dev
+```
+
+内置示例世界保留在 `library/worlds/`，不会被数据清理脚本删除。
+
+清理运行数据的 SQLite WAL/SHM、过期备份或旧生成世界：
+
+```bash
+npm run cleanup:data -- --dry-run
+npm run cleanup:data -- --apply
+npm run cleanup:data -- --apply --keep-worlds 5
 ```
 
 ## 开发
@@ -283,18 +317,8 @@ WorldX/
 ```bash
 npm run dev          # 同时启动客户端和服务器（开发模式）
 npm run create       # 通过命令行直接生成新世界
+npm run cleanup:data # 预览运行数据清理
 ```
 
-- 客户端：`http://localhost:3200`
-- 服务器：`http://localhost:3100`
-
-## 交流群
-<img src="docs/qq_group.jpg" width="200px"/>
-
-
-## 感谢
--  [LinuxDO](https://linux.do/)
-
-## License
-MIT
-
+* 客户端：`http://localhost:3200`
+* 服务器：`http://localhost:3100`

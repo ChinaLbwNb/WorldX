@@ -55,6 +55,86 @@ function buildElementBoxes(elements) {
     }));
 }
 
+function normalizeSuggestedBox(box, imageWidth, imageHeight) {
+  const topLeft = box?.topLeft || box?.top_left || box?.tl;
+  const bottomRight = box?.bottomRight || box?.bottom_right || box?.br;
+  if (!topLeft || !bottomRight) return null;
+  const x1 = Math.max(0, Math.min(imageWidth, Math.round(Number(topLeft.x))));
+  const y1 = Math.max(0, Math.min(imageHeight, Math.round(Number(topLeft.y))));
+  const x2 = Math.max(0, Math.min(imageWidth, Math.round(Number(bottomRight.x))));
+  const y2 = Math.max(0, Math.min(imageHeight, Math.round(Number(bottomRight.y))));
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
+  if (x2 - x1 < 4 || y2 - y1 < 4) return null;
+  return { topLeft: { x: x1, y: y1 }, bottomRight: { x: x2, y: y2 } };
+}
+
+function parseJsonObject(raw) {
+  const match = String(raw || "").match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : JSON.parse(raw);
+}
+
+async function locateElementsWithVision({ elements, userPrompt, mapDescription, imageBuffer, imageWidth, imageHeight, logStep, additionalConstraints }) {
+  if (process.env.STEP3_2_VISION_BBOX_FALLBACK === "0" || elements.length === 0) return [];
+  const list = elements.map((element, index) => [
+    `${index + 1}. ${element.name} (${element.id})`,
+    `   - 位置提示：${element.placementHint || "未指定"}`,
+    `   - 外观提示：${element.visualDescription || element.description || "未指定"}`,
+    `   - 说明：${element.description || "无"}`,
+  ].join("\n")).join("\n");
+  const prompt = [
+    "你是游戏地图可交互元素定位器。请直接在给定地图原图中定位小型物件，返回 JSON 坐标，不要返回解释。",
+    "",
+    `地图尺寸：${imageWidth} x ${imageHeight}`,
+    "坐标系：左上角为 (0,0)，x 向右，y 向下。",
+    "",
+    "原始需求：",
+    userPrompt,
+    "",
+    "地图描述：",
+    mapDescription,
+    "",
+    "需要定位的可交互元素：",
+    list,
+    "",
+    "规则：",
+    "- 每个元素返回一个紧贴物件视觉主体的轴对齐矩形 bbox。",
+    "- 元素是小型物件或设施，不是房间/大区域。",
+    "- 不要框周围大面积道路、空地或其他物体。",
+    "- 如果同名物件有多个，选择最符合位置提示的一个。",
+    "- 如果无法确认某个元素，放入 missing_element_ids，不要硬猜。",
+    additionalConstraints ? `\n额外修正要求：\n${additionalConstraints}` : "",
+    "",
+    "只返回如下 JSON：",
+    `{"elements":[{"id":"element_id","topLeft":{"x":0,"y":0},"bottomRight":{"x":100,"y":100}}],"missing_element_ids":[]}`,
+  ].join("\n");
+  try {
+    const raw = await geminiProVision(prompt, [imageBuffer], {
+      logStep,
+      requestTimeoutMs: parseInt(
+        process.env.STEP3_2_VISION_BBOX_TIMEOUT_MS || process.env.STEP3_VISION_BBOX_TIMEOUT_MS || "90000",
+        10,
+      ),
+      temperature: 0.1,
+    });
+    const parsed = parseJsonObject(raw);
+    const boxes = Array.isArray(parsed.elements) ? parsed.elements : [];
+    return boxes.map((box) => {
+      const element = elements.find((candidate) => candidate.id === box.id);
+      const normalized = normalizeSuggestedBox(box, imageWidth, imageHeight);
+      if (!element || !normalized) return null;
+      return {
+        id: element.id,
+        name: element.name,
+        topLeft: normalized.topLeft,
+        bottomRight: normalized.bottomRight,
+      };
+    }).filter(Boolean);
+  } catch (error) {
+    console.warn(`[Step 3.2] Vision bbox fallback failed: ${error.message}`);
+    return [];
+  }
+}
+
 // ─── Nano Banana batch overlay ──────────────────────────────────────────────
 
 async function processBatch({ batchIndex, elements, userPrompt, mapDescription, compressedMap, overlayInputMap, save, additionalConstraints }) {
@@ -100,11 +180,17 @@ async function processBatch({ batchIndex, elements, userPrompt, mapDescription, 
     );
   });
 
-  const markedBuffer = await editImage(prompt, overlayInputMap, {
-    imageSize: "1K",
-    logStep: `Step 3.2 overlay batch ${batchIndex}`,
-    requestTimeoutMs: IMAGE_EDIT_TIMEOUT_MS,
-  });
+  let markedBuffer;
+  try {
+    markedBuffer = await editImage(prompt, overlayInputMap, {
+      imageSize: "1K",
+      logStep: `Step 3.2 overlay batch ${batchIndex}`,
+      requestTimeoutMs: IMAGE_EDIT_TIMEOUT_MS,
+    });
+  } catch (e) {
+    console.warn(`[Step 3.2] Batch ${batchIndex}: overlay generation failed (${e.message}), returning empty batch`);
+    return { batchIndex, detectedElements: [] };
+  }
   save(`03.2-overlay-batch-${batchIndex}.png`, markedBuffer);
   console.log(
     `[Step 3.2] Batch ${batchIndex}: overlay saved (${Math.round(markedBuffer.length / 1024)}KB)`,
@@ -186,28 +272,60 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
       `[Step 3.2] Attempt ${attempt}/${TOTAL_ATTEMPTS}: locating ${pendingElements.length} element(s) via color overlay...`,
     );
 
-    // ── Phase A: Batch overlay via Nano Banana (only for pending elements) ──
-    const batches = chunkArray(pendingElements, MAX_BATCH_SIZE);
+    // ── Phase A: Vision bbox first, then Nano Banana overlay for remaining elements ──
+    let elementsForOverlay = pendingElements;
+    const visionFirst = process.env.STEP3_2_VISION_BBOX_FIRST !== "0";
+    if (visionFirst) {
+      console.log(
+        `[Step 3.2] Attempt ${attempt}: using Vision bbox first for ${pendingElements.length} pending element(s)...`,
+      );
+      const visionElements = await locateElementsWithVision({
+        elements: pendingElements,
+        userPrompt,
+        mapDescription,
+        imageBuffer: compressedBuffer,
+        imageWidth,
+        imageHeight,
+        logStep: `Step 3.2 vision bbox first attempt ${attempt}`,
+        additionalConstraints,
+      });
+      const visionMap = new Map(visionElements.map((d) => [d.id, d]));
+      for (const element of elements) {
+        if ((!element.topLeft || !element.bottomRight) && visionMap.has(element.id)) {
+          const d = visionMap.get(element.id);
+          element.topLeft = d.topLeft;
+          element.bottomRight = d.bottomRight;
+        }
+      }
+      if (visionElements.length > 0) {
+        console.log(`[Step 3.2] Attempt ${attempt}: Vision bbox first located ${visionElements.length} element(s)`);
+      }
+      elementsForOverlay = elements.filter((e) => !e.topLeft || !e.bottomRight);
+    }
+
+    const batches = chunkArray(elementsForOverlay, MAX_BATCH_SIZE);
     console.log(`[Step 3.2] Split into ${batches.length} batch(es), max ${MAX_BATCH_SIZE} per batch`);
 
     const attemptSave = attempt === 1
       ? save
       : (name, data) => save(name.replace(/\.png$/, `-a${attempt}.png`), data);
 
-    const batchResults = await Promise.all(
-      batches.map((batchElements, idx) =>
-        processBatch({
-          batchIndex: idx + 1,
-          elements: batchElements,
-          userPrompt,
-          mapDescription,
-          compressedMap: compressedBuffer,
-          overlayInputMap: overlayWorkingImage.buffer,
-          save: attemptSave,
-          additionalConstraints,
-        }),
-      ),
-    );
+    const batchResults = batches.length === 0
+      ? []
+      : await Promise.all(
+          batches.map((batchElements, idx) =>
+            processBatch({
+              batchIndex: idx + 1,
+              elements: batchElements,
+              userPrompt,
+              mapDescription,
+              compressedMap: compressedBuffer,
+              overlayInputMap: overlayWorkingImage.buffer,
+              save: attemptSave,
+              additionalConstraints,
+            }),
+          ),
+        );
 
     const detectedElements = batchResults.flatMap((r) => r.detectedElements);
     const detectedMap = new Map(detectedElements.map((d) => [d.id, d]));
@@ -217,6 +335,34 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
         const d = detectedMap.get(element.id);
         element.topLeft = d.topLeft;
         element.bottomRight = d.bottomRight;
+      }
+    }
+
+    const missingAfterOverlay = elements.filter((e) => !e.topLeft || !e.bottomRight);
+    if (missingAfterOverlay.length > 0) {
+      console.log(
+        `[Step 3.2] Attempt ${attempt}: using Vision bbox fallback for ${missingAfterOverlay.length} missing element(s)...`,
+      );
+      const fallbackElements = await locateElementsWithVision({
+        elements: missingAfterOverlay,
+        userPrompt,
+        mapDescription,
+        imageBuffer: compressedBuffer,
+        imageWidth,
+        imageHeight,
+        logStep: `Step 3.2 vision bbox fallback attempt ${attempt}`,
+        additionalConstraints,
+      });
+      const fallbackMap = new Map(fallbackElements.map((d) => [d.id, d]));
+      for (const element of elements) {
+        if ((!element.topLeft || !element.bottomRight) && fallbackMap.has(element.id)) {
+          const d = fallbackMap.get(element.id);
+          element.topLeft = d.topLeft;
+          element.bottomRight = d.bottomRight;
+        }
+      }
+      if (fallbackElements.length > 0) {
+        console.log(`[Step 3.2] Attempt ${attempt}: Vision bbox fallback located ${fallbackElements.length} element(s)`);
       }
     }
 
@@ -269,8 +415,7 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
         logStep: `Step 3.2 confirm attempt ${attempt}`,
         requestTimeoutMs: CONFIRM_TIMEOUT_MS,
       });
-      const match = raw.match(/\{[\s\S]*\}/);
-      confirmResult = match ? JSON.parse(match[0]) : { pass: true, problematic_element_ids: [] };
+      confirmResult = parseJsonObject(raw);
     } catch (e) {
       console.warn(
         `[Step 3.2] Attempt ${attempt}: confirmation call failed (keeping all detected elements): ${e.message}`,
@@ -278,11 +423,34 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
       confirmResult = { pass: true, problematic_element_ids: [] };
     }
 
-    const problematicIds = confirmResult.problematic_element_ids || [];
+    const allowVisionBoxAdjust = process.env.STEP3_ALLOW_VISION_BBOX_ADJUST !== "0";
+    const suggestedBoxes = confirmResult.suggested_boxes || confirmResult.suggested_element_boxes || {};
+    let problematicIds = confirmResult.problematic_element_ids || [];
+    if (allowVisionBoxAdjust && problematicIds.length > 0 && suggestedBoxes && typeof suggestedBoxes === "object") {
+      const adjustedIds = [];
+      for (const id of problematicIds) {
+        const nextBox = normalizeSuggestedBox(suggestedBoxes[id], imageWidth, imageHeight);
+        const element = elements.find((candidate) => candidate.id === id);
+        if (!nextBox || !element) continue;
+        element.topLeft = nextBox.topLeft;
+        element.bottomRight = nextBox.bottomRight;
+        adjustedIds.push(id);
+      }
+      if (adjustedIds.length > 0) {
+        console.log(`[Step 3.2] Attempt ${attempt}: applied Vision box adjustment(s): ${adjustedIds.join(", ")}`);
+        problematicIds = problematicIds.filter((id) => !adjustedIds.includes(id));
+      }
+    }
     lastProblematicIds = problematicIds;
 
     if (confirmResult.pass) {
       console.log(`[Step 3.2] Attempt ${attempt}: confirmation passed — all detected elements accepted.`);
+      reviewPassed = true;
+      break;
+    }
+
+    if (problematicIds.length === 0) {
+      console.log(`[Step 3.2] Attempt ${attempt}: confirmation issues resolved by box adjustment.`);
       reviewPassed = true;
       break;
     }

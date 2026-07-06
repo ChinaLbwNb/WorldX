@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { apiClient } from "../services/api-client";
+import { networkManager } from "../../systems/NetworkManager";
 import type {
   CharacterInfo,
   DialogueEventData,
@@ -8,8 +9,7 @@ import type {
   SimulationEvent,
 } from "../../types/api";
 import { buildCharacterNameMap } from "../utils/event-format";
-import { DialogueChatView, type TimedTurn } from "./DialogueChatView";
-import { useDialogueStyle, toggleDialogueStyle } from "../hooks/useDialogueStyle";
+import { darkGlassSubtlePanelStyle } from "../components/panel-styles";
 
 interface DialogueSession {
   conversationId: string;
@@ -26,14 +26,6 @@ function absoluteTick(day: number, tick: number, ticksPerScene: number): number 
   return (day - 1) * ticksPerScene + tick;
 }
 
-function isDialogueTurn(turn: DialogueTurn | null | undefined): turn is DialogueTurn {
-  return (
-    !!turn &&
-    typeof turn.speaker === "string" &&
-    typeof turn.content === "string"
-  );
-}
-
 export function DialoguePanel({
   events,
   ticksPerScene,
@@ -47,11 +39,12 @@ export function DialoguePanel({
   const [characters, setCharacters] = useState<CharacterInfo[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
-  const dialogueStyle = useDialogueStyle();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    apiClient.getCharacters().then(setCharacters).catch(console.warn);
+    apiClient.getCharacters(networkManager.getSelectedUserCharacterId() || undefined)
+      .then(setCharacters)
+      .catch(console.warn);
   }, []);
 
   const sessions = useMemo(() => {
@@ -126,72 +119,6 @@ export function DialoguePanel({
     [sessions],
   );
 
-  // Per-conversation turns carrying each turn's own time, used only by the
-  // IM view. Kept separate from `sessions` so the classic path is
-  // untouched. Mirrors the same index-based merge as `sessions`.
-  const timedTurnsByConversation = useMemo(() => {
-    if (dialogueStyle !== "im") return new Map<string, TimedTurn[]>();
-    const map = new Map<string, TimedTurn[]>();
-
-    for (const event of events) {
-      const dialogue = event.data as DialogueEventData | undefined;
-      if (!dialogue?.conversationId || !Array.isArray(dialogue.turns)) continue;
-
-      const absTick = absoluteTick(event.gameDay, event.gameTick, ticksPerScene);
-      const toTimed = (turn: DialogueTurn): TimedTurn => ({
-        ...turn,
-        gameDay: event.gameDay,
-        gameTick: event.gameTick,
-        timeString: event.timeString,
-        absTick,
-      });
-
-      const existing = map.get(dialogue.conversationId);
-
-      // First time we see this conversation: stamp every turn with this event's
-      // time (for a seed event these are each turn's real tick).
-      if (!existing) {
-        map.set(dialogue.conversationId, dialogue.turns.filter(isDialogueTurn).map(toTimed));
-        continue;
-      }
-
-      // The complete event carries the full transcript stamped with the
-      // conversation's END time. Take its final content as authoritative but
-      // preserve each turn's original time recorded during the incremental
-      // phase, so cross-tick timelines don't collapse to the last tick.
-      // Missing indices (turns we never saw incrementally) fall back to the
-      // complete event's time.
-      if (dialogue.phase === "complete") {
-        map.set(
-          dialogue.conversationId,
-          dialogue.turns.flatMap((turn, idx) => {
-            if (!isDialogueTurn(turn)) return [];
-            const prior = existing[idx];
-            return [prior
-              ? {
-                  ...turn,
-                  gameDay: prior.gameDay,
-                  gameTick: prior.gameTick,
-                  timeString: prior.timeString,
-                  absTick: prior.absTick,
-                }
-              : toTimed(turn)];
-          }),
-        );
-        continue;
-      }
-
-      const merged = [...existing];
-      dialogue.turns.forEach((turn, idx) => {
-        if (!isDialogueTurn(turn)) return;
-        merged[dialogue.turnIndexStart + idx] = toTimed(turn);
-      });
-      map.set(dialogue.conversationId, merged);
-    }
-
-    return map;
-  }, [dialogueStyle, events, ticksPerScene]);
-
   useEffect(() => {
     if (activeTab && !visibleSessions.some((s) => s.conversationId === activeTab)) {
       setActiveTab(visibleSessions[0]?.conversationId ?? null);
@@ -213,9 +140,6 @@ export function DialoguePanel({
     visibleSessions.find((s) => s.conversationId === activeTab) ??
     visibleSessions[0];
   const summarySession = collapsed ? visibleSessions[0] : current;
-  const currentTurns = current.turns.filter(isDialogueTurn);
-  const summaryTurns = summarySession.turns.filter(isDialogueTurn);
-  const summaryLatestTurn = summaryTurns[summaryTurns.length - 1];
 
   const getSessionLabel = (s: DialogueSession) => {
     const [a, b] = s.participants;
@@ -241,12 +165,9 @@ export function DialoguePanel({
       <div
         onClick={() => setCollapsed((v) => !v)}
         style={{
-          background:
-            "linear-gradient(180deg, rgba(20,20,40,0.92), rgba(20,20,40,0.98))",
-          backdropFilter: "blur(12px)",
+          ...darkGlassSubtlePanelStyle,
           borderRadius: collapsed ? 12 : "12px 12px 0 0",
           padding: "10px 14px",
-          border: "1px solid rgba(255,255,255,0.1)",
           borderBottom:
             !collapsed && current ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(255,255,255,0.1)",
           display: "flex",
@@ -269,49 +190,13 @@ export function DialoguePanel({
           </div>
           {collapsed && (
             <div style={{ color: "#888", fontSize: 11, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {summaryLatestTurn
-                ? `${characterNames[summaryLatestTurn.speaker] || summaryLatestTurn.speaker}: ${summaryLatestTurn.content}`
+              {summarySession.turns.length > 0
+                ? `${characterNames[summarySession.turns[summarySession.turns.length - 1].speaker] || summarySession.turns[summarySession.turns.length - 1].speaker}: ${summarySession.turns[summarySession.turns.length - 1].content}`
                 : t("dialogue.noContent")}
             </div>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleDialogueStyle();
-            }}
-            title={
-              dialogueStyle === "im"
-                ? t("dialogue.styleToggleToClassic")
-                : t("dialogue.styleToggleToIM")
-            }
-            aria-label={
-              dialogueStyle === "im"
-                ? t("dialogue.styleToggleToClassic")
-                : t("dialogue.styleToggleToIM")
-            }
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 24,
-              height: 24,
-              borderRadius: "50%",
-              border: "1px solid rgba(255,255,255,0.1)",
-              background:
-                dialogueStyle === "im"
-                  ? "rgba(116,185,255,0.22)"
-                  : "rgba(255,255,255,0.05)",
-              color: dialogueStyle === "im" ? "#74b9ff" : "#bbb",
-              fontSize: 13,
-              lineHeight: 1,
-              cursor: "pointer",
-              pointerEvents: "auto",
-            }}
-          >
-            💬
-          </button>
           <span style={{ color: "#888", fontSize: 11 }}>
             {t("dialogue.sessionCount", { count: visibleSessions.length })}
           </span>
@@ -342,8 +227,7 @@ export function DialoguePanel({
             gap: 4,
             overflowX: "auto",
             padding: "6px 6px 0",
-            background:
-              "linear-gradient(180deg, rgba(20,20,40,0.95), rgba(20,20,40,0.98))",
+            background: String(darkGlassSubtlePanelStyle.background),
             borderLeft: "1px solid rgba(255,255,255,0.1)",
             borderRight: "1px solid rgba(255,255,255,0.1)",
           }}
@@ -399,12 +283,9 @@ export function DialoguePanel({
       {!collapsed && current && (
         <div
           style={{
-            background:
-              "linear-gradient(180deg, rgba(20,20,40,0.95), rgba(20,20,40,0.98))",
-            backdropFilter: "blur(12px)",
+            ...darkGlassSubtlePanelStyle,
             borderRadius: visibleSessions.length > 1 ? "0 0 12px 12px" : "0 0 12px 12px",
             padding: "12px 16px",
-            border: "1px solid rgba(255,255,255,0.1)",
             borderTop: "none",
             maxHeight: 220,
             display: "flex",
@@ -444,59 +325,50 @@ export function DialoguePanel({
             </button>
           </div>
 
-          {dialogueStyle === "im" ? (
-            <DialogueChatView
-              turns={timedTurnsByConversation.get(current.conversationId) ?? []}
-              characterNames={characterNames}
-              characters={characters}
-              scrollRef={scrollRef}
-            />
-          ) : (
-            <div
-              ref={scrollRef}
-              className="dialogue-scroll"
-              style={{ overflow: "auto", flex: 1, paddingRight: 4 }}
-            >
-              {currentTurns.map((turn, i) => (
-                <div
-                  key={i}
-                  style={{
-                    padding: "6px 0",
-                    borderBottom:
-                      i < currentTurns.length - 1
-                        ? "1px solid rgba(255,255,255,0.06)"
-                        : "none",
-                    animation: "fadeIn 0.4s ease",
-                  }}
+          <div
+            ref={scrollRef}
+            className="dialogue-scroll"
+            style={{ overflow: "auto", flex: 1, paddingRight: 4 }}
+          >
+            {current.turns.map((turn, i) => (
+              <div
+                key={i}
+                style={{
+                  padding: "6px 0",
+                  borderBottom:
+                    i < current.turns.length - 1
+                      ? "1px solid rgba(255,255,255,0.06)"
+                      : "none",
+                  animation: "fadeIn 0.4s ease",
+                }}
+              >
+                <span
+                  style={{ color: "#74b9ff", fontSize: 12, fontWeight: 600 }}
                 >
-                  <span
-                    style={{ color: "#74b9ff", fontSize: 12, fontWeight: 600 }}
-                  >
-                    {characterNames[turn.speaker] || turn.speaker}
-                  </span>
-                  <div style={{ color: "#e0e0e0", fontSize: 13, marginTop: 2 }}>
-                    {turn.content}
-                  </div>
-                  {turn.innerMonologue && (
-                    <div
-                      style={{
-                        color: "#b39ddb",
-                        fontSize: 12,
-                        fontStyle: "italic",
-                        marginTop: 4,
-                        paddingLeft: 12,
-                        borderLeft: "2px dashed rgba(179, 157, 219, 0.45)",
-                        opacity: 0.88,
-                      }}
-                      title={t("dialogue.innerMonologueTitle")}
-                    >
-                      💭 {turn.innerMonologue}
-                    </div>
-                  )}
+                  {characterNames[turn.speaker] || turn.speaker}
+                </span>
+                <div style={{ color: "#e0e0e0", fontSize: 13, marginTop: 2 }}>
+                  {turn.content}
                 </div>
-              ))}
-            </div>
-          )}
+                {turn.innerMonologue && (
+                  <div
+                    style={{
+                      color: "#b39ddb",
+                      fontSize: 12,
+                      fontStyle: "italic",
+                      marginTop: 4,
+                      paddingLeft: 12,
+                      borderLeft: "2px dashed rgba(179, 157, 219, 0.45)",
+                      opacity: 0.88,
+                    }}
+                    title={t("dialogue.innerMonologueTitle")}
+                  >
+                    💭 {turn.innerMonologue}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

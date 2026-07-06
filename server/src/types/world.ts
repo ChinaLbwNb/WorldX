@@ -30,6 +30,40 @@ export interface WorldSizeConfig {
   gridHeight?: number;
 }
 
+export type WorldMapStatus = "available" | "generating" | "failed";
+
+export interface WorldMapNodeConfig {
+  id: string;
+  name: string;
+  gridX: number;
+  gridY: number;
+  status: WorldMapStatus;
+  mapDir: string;
+  previewImage: string;
+  defaultSpawnPointId?: string;
+  createdAt: string;
+  source?: {
+    fromMapId?: string;
+    prompt?: string;
+    model?: string;
+  };
+}
+
+export interface WorldMapLinkConfig {
+  fromMapId: string;
+  toMapId: string;
+  label?: string;
+}
+
+export interface MapSpawnPointConfig {
+  mapId: string;
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  default?: boolean;
+}
+
 /** 区域配置（来自 world.json） */
 export interface LocationConfig {
   id: string;
@@ -111,4 +145,8 @@ export interface WorldConfig {
   locations: LocationConfig[];
   mainAreaPoints?: MainAreaPointConfig[];
   worldSize?: WorldSizeConfig;
+  activeMapId?: string;
+  mapNodes?: WorldMapNodeConfig[];
+  mapLinks?: WorldMapLinkConfig[];
+  mapSpawnPoints?: MapSpawnPointConfig[];
 }

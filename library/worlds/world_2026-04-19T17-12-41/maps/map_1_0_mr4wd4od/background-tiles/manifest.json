@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "width": 1024,
+  "height": 1024,
+  "tileSize": 1024,
+  "preview": "background-preview.png",
+  "tiles": [
+    {
+      "key": "world-base-tile-0",
+      "path": "background-tiles/tile-0.png",
+      "x": 0,
+      "y": 0,
+      "width": 1024,
+      "height": 1024
+    }
+  ]
+}

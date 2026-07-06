@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { GameTime, SimulationEvent } from "../types/index.js";
-import { listAllWorlds } from "../utils/world-directories.js";
+import {
+  canUserManageWorld,
+  getUserWorldRole,
+  listGeneratedWorlds,
+  listLibraryWorlds,
+} from "../utils/world-directories.js";
+import * as accountAssets from "../store/account-asset-store.js";
 
 export interface TimelineMeta {
   id: string;
@@ -39,7 +45,8 @@ const TIMELINES_DIR_NAME = "timelines";
 function generateTimelineId(): string {
   const now = new Date();
   const pad = (n: number, len = 2) => String(n).padStart(len, "0");
-  return `tl-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const random = Math.random().toString(36).slice(2, 6);
+  return `tl-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}${pad(now.getMilliseconds(), 3)}-${random}`;
 }
 
 export class TimelineManager {
@@ -53,19 +60,25 @@ export class TimelineManager {
    * If timelineId is provided and exists, use it; otherwise pick the latest or create new.
    * Returns the resolved timeline ID.
    */
-  initialize(worldDir: string, timelineId?: string): string {
+  initialize(worldDir: string, timelineId?: string, userId?: string): string {
     this.worldDir = worldDir;
+    const worldId = path.basename(worldDir);
+    const effectiveUserId = this.isLibraryWorldDir(worldDir) ? undefined : userId;
 
     if (timelineId) {
       const dir = this.getTimelineDir(worldDir, timelineId);
-      if (fs.existsSync(dir) && fs.existsSync(path.join(dir, "meta.json"))) {
+      if (
+        fs.existsSync(dir) &&
+        fs.existsSync(path.join(dir, "meta.json")) &&
+        (!effectiveUserId || accountAssets.userOwnsTimeline(effectiveUserId, worldId, timelineId))
+      ) {
         this.currentTimelineId = timelineId;
         this.tickCount = this.readMeta(worldDir, timelineId).tickCount;
         return timelineId;
       }
     }
 
-    const timelines = this.listTimelines(worldDir);
+    const timelines = this.listTimelines(worldDir, effectiveUserId);
     if (timelines.length > 0) {
       const latest = timelines[0];
       this.currentTimelineId = latest.id;
@@ -73,12 +86,17 @@ export class TimelineManager {
       return latest.id;
     }
 
-    return this.createTimeline(worldDir);
+    return this.createTimeline(worldDir, effectiveUserId);
   }
 
-  createTimeline(worldDir: string): string {
-    const id = generateTimelineId();
-    const dir = this.getTimelineDir(worldDir, id);
+  createTimeline(worldDir: string, userId?: string): string {
+    const effectiveUserId = this.isLibraryWorldDir(worldDir) ? undefined : userId;
+    let id = generateTimelineId();
+    let dir = this.getTimelineDir(worldDir, id);
+    while (fs.existsSync(dir)) {
+      id = generateTimelineId();
+      dir = this.getTimelineDir(worldDir, id);
+    }
     fs.mkdirSync(dir, { recursive: true });
 
     const worldId = path.basename(worldDir);
@@ -92,6 +110,14 @@ export class TimelineManager {
       status: "recording",
     };
     fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2));
+    if (effectiveUserId) {
+      accountAssets.ensureTimelineAsset({
+        userId: effectiveUserId,
+        worldId,
+        timelineId: id,
+        createdAt: meta.createdAt,
+      });
+    }
 
     this.worldDir = worldDir;
     this.currentTimelineId = id;
@@ -152,12 +178,16 @@ export class TimelineManager {
     this.updateMetaField({ status: "stopped" });
   }
 
-  listTimelines(worldDir: string): TimelineMeta[] {
+  listTimelines(worldDir: string, userId?: string): TimelineMeta[] {
     const timelinesDir = path.join(worldDir, TIMELINES_DIR_NAME);
     if (!fs.existsSync(timelinesDir)) return [];
+    const allowedTimelineIds = userId
+      ? new Set(accountAssets.listTimelineIdsForUser(userId, path.basename(worldDir)))
+      : null;
 
     return fs.readdirSync(timelinesDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
+      .filter((entry) => !allowedTimelineIds || allowedTimelineIds.has(entry.name))
       .map((entry) => {
         try {
           return this.readMeta(worldDir, entry.name);
@@ -169,28 +199,44 @@ export class TimelineManager {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  listAllTimelinesGrouped(): {
+  listAllTimelinesGrouped(userId?: string): {
     worldId: string;
     worldName: string;
     source: string;
+    canManage: boolean;
+    role: string | null;
     isCurrent: boolean;
     timelines: TimelineMeta[];
   }[] {
-    const worlds = listAllWorlds();
+    const worlds = [
+      ...listGeneratedWorlds(userId),
+      ...listLibraryWorlds(userId),
+    ];
     const currentWorldId = this.worldDir ? path.basename(this.worldDir) : null;
 
     return worlds.map((world) => ({
       worldId: world.id,
       worldName: world.worldName,
       source: world.source,
+      canManage: canUserManageWorld(world, userId),
+      role: getUserWorldRole(world, userId),
       isCurrent: world.id === currentWorldId,
-      timelines: this.listTimelines(world.dir),
+      timelines: this.listTimelines(world.dir, world.source === "library" ? undefined : userId),
     }));
   }
 
-  deleteTimeline(worldDir: string, timelineId: string): void {
+  private isLibraryWorldDir(worldDir: string): boolean {
+    const worldId = path.basename(worldDir);
+    return listLibraryWorlds().some((world) => world.id === worldId);
+  }
+
+  deleteTimeline(worldDir: string, timelineId: string, userId?: string): void {
     const dir = this.getTimelineDir(worldDir, timelineId);
     if (!fs.existsSync(dir)) return;
+    const worldId = path.basename(worldDir);
+    if (userId && !accountAssets.userOwnsTimeline(userId, worldId, timelineId)) {
+      throw new Error("Timeline not found");
+    }
 
     if (this.currentTimelineId === timelineId && this.worldDir === worldDir) {
       this.stopRecording();
@@ -198,6 +244,9 @@ export class TimelineManager {
     }
 
     fs.rmSync(dir, { recursive: true, force: true });
+    if (userId) {
+      accountAssets.deleteTimelineAsset(userId, worldId, timelineId);
+    }
   }
 
   getTimelineDir(worldDir: string, timelineId: string): string {

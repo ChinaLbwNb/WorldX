@@ -1,6 +1,8 @@
 import path from "node:path";
 import { Router, type Request, type Response } from "express";
 import { appContext } from "../../services/app-context.js";
+import { getRequestUserId } from "../request-user.js";
+import { canUserAccessWorld, findWorldById } from "../../utils/world-directories.js";
 import {
   beginSimulationTick,
   getActiveSimulationTicks,
@@ -13,6 +15,7 @@ import {
 } from "../../utils/time-helpers.js";
 import * as eventStore from "../../store/event-store.js";
 import { enrichEventTime } from "./events.js";
+import { recordTutorialTaskEvent } from "../../store/tutorial-task-store.js";
 
 const router = Router();
 
@@ -25,11 +28,13 @@ let cancelRequested = false;
 function getCurrentSimulationContext(): {
   worldId: string | null;
   timelineId: string | null;
+  mapId: string | null;
 } {
   const worldDir = appContext.getWorldDir();
   return {
     worldId: worldDir ? path.basename(worldDir) : null,
     timelineId: appContext.timelineManager.getCurrentTimelineId(),
+    mapId: appContext.worldManager.getActiveMapId(),
   };
 }
 
@@ -38,6 +43,17 @@ function rejectIfSimulationContextChanged(req: Request, res: Response): boolean 
     typeof req.body?.worldId === "string" ? req.body.worldId : "";
   const expectedTimelineId =
     typeof req.body?.timelineId === "string" ? req.body.timelineId : "";
+  const userCharacterId =
+    typeof req.body?.userCharacterId === "string" ? req.body.userCharacterId : "";
+
+  if (userCharacterId && !alignSimulationContextToUserCharacter(req, res, {
+    expectedWorldId,
+    expectedTimelineId,
+    userCharacterId,
+  })) {
+    return true;
+  }
+
   const current = getCurrentSimulationContext();
 
   if (!current.worldId || !current.timelineId) {
@@ -69,6 +85,65 @@ function rejectIfSimulationContextChanged(req: Request, res: Response): boolean 
   return false;
 }
 
+function alignSimulationContextToUserCharacter(
+  req: Request,
+  res: Response,
+  input: { expectedWorldId: string; expectedTimelineId: string; userCharacterId: string },
+): boolean {
+  const userId = getRequestUserId(req);
+  const character = appContext.playerManager.getPlayer(input.userCharacterId, userId);
+  if (!character) {
+    res.status(404).json({ error: "User character not found" });
+    return false;
+  }
+
+  const presence = appContext.playerManager.getPlayerPresence(input.userCharacterId);
+  if (
+    (input.expectedWorldId && input.expectedWorldId !== presence.worldId) ||
+    (input.expectedTimelineId && input.expectedTimelineId !== presence.timelineId)
+  ) {
+    res.status(409).json({
+      error: "Requested simulation context does not match the selected user character.",
+      currentWorldId: presence.worldId,
+      currentTimelineId: presence.timelineId,
+    });
+    return false;
+  }
+
+  const world = findWorldById(presence.worldId);
+  if (!world) {
+    res.status(404).json({ error: "World not found for character presence" });
+    return false;
+  }
+  if (!canUserAccessWorld(world, userId)) {
+    res.status(403).json({ error: "You do not have access to this world" });
+    return false;
+  }
+
+  const current = getCurrentSimulationContext();
+  if (current.worldId === presence.worldId && current.timelineId === presence.timelineId) {
+    return true;
+  }
+
+  if (getActiveSimulationTicks() > 0) {
+    res.status(409).json({
+      error: getSimulationBusyMessage(),
+      activeSimulationTicks: getActiveSimulationTicks(),
+      canSwitchContext: false,
+    });
+    return false;
+  }
+
+  if (current.worldId !== presence.worldId) {
+    appContext.switchWorld(world.dir, userId);
+  }
+  if (appContext.timelineManager.getCurrentTimelineId() !== presence.timelineId) {
+    appContext.switchTimeline(presence.timelineId, userId);
+  }
+
+  return true;
+}
+
 async function runGuardedSimulationTick() {
   const finishTick = beginSimulationTick();
   try {
@@ -86,12 +161,37 @@ function buildSimulationActivityPayload() {
   };
 }
 
+function buildSimulationScope() {
+  const current = getCurrentSimulationContext();
+  if (!current.worldId || !current.timelineId || !current.mapId) return null;
+  return {
+    worldId: current.worldId,
+    timelineId: current.timelineId,
+    mapId: current.mapId,
+  };
+}
+
 // POST /simulation/tick — advance 1 tick
 router.post("/tick", async (req, res) => {
   if (rejectIfSimulationContextChanged(req, res)) return;
+  if (isSimulationBusy()) {
+    res.status(409).json({
+      error: getSimulationBusyMessage(),
+      ...buildSimulationActivityPayload(),
+    });
+    return;
+  }
 
   try {
+    const sourceUserCharacterId =
+      typeof req.body?.userCharacterId === "string" ? req.body.userCharacterId : undefined;
     simStatus = "running";
+    const scope = buildSimulationScope();
+    appContext.eventBus.emit("simulation_status", {
+      status: "running",
+      scope,
+      ...buildSimulationActivityPayload(),
+    });
     const events = await runGuardedSimulationTick();
     const gameTime = appContext.worldManager.getCurrentTime();
     const worldTime = buildWorldTimeInfo(gameTime);
@@ -99,8 +199,19 @@ router.post("/tick", async (req, res) => {
       .getEventsByIds(events.map((event) => event.id))
       .map(enrichEventTime);
 
-    appContext.eventBus.emit("tick_events", { gameTime, events });
-    appContext.eventBus.emit("simulation_status", { status: "idle" });
+    appContext.eventBus.emit("tick_events", {
+      gameTime,
+      worldTime,
+      events,
+      scope,
+      sourceUserCharacterId,
+    });
+    appContext.eventBus.emit("simulation_status", {
+      status: "idle",
+      scope,
+      ...buildSimulationActivityPayload(),
+    });
+    recordTutorialTaskEvent(getRequestUserId(req), "run_tick");
 
     simStatus = "idle";
     res.json({

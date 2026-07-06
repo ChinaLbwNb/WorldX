@@ -149,6 +149,8 @@ export interface TimelineWithWorld {
   worldId: string;
   worldName: string;
   source?: "user" | "library";
+  canManage?: boolean;
+  role?: "owner" | "admin" | "builder" | "viewer" | "public" | null;
   isCurrent: boolean;
   timelines: TimelineMeta[];
 }
@@ -171,3 +173,101 @@ export interface TimelineTickFrame {
 }
 
 export type TimelineFrame = TimelineInitFrame | TimelineTickFrame;
+
+// --- Build System Types ---
+
+export interface BuildResourceNode {
+  id: string;
+  name: string;
+  locationId: string;
+  pixelX: number;
+  pixelY: number;
+  width: number;
+  height: number;
+  resourcePerClick: number;
+  cooldownMs: number;
+}
+
+export interface WorldMapNodeInfo {
+  id: string;
+  name: string;
+  gridX: number;
+  gridY: number;
+  status: "available" | "generating" | "failed";
+  mapDir: string;
+  previewImage: string;
+  defaultSpawnPointId?: string;
+  createdAt: string;
+  source?: {
+    fromMapId?: string;
+    prompt?: string;
+    model?: string;
+  };
+}
+
+export interface WorldMapLinkInfo {
+  fromMapId: string;
+  toMapId: string;
+  label?: string;
+}
+
+export interface MapNodesState {
+  currentWorldId: string;
+  activeMapId: string;
+  mapNodes: WorldMapNodeInfo[];
+  links: WorldMapLinkInfo[];
+  currentPlayerMapId: string;
+  mapRuntimes?: MapRuntimeSnapshot[];
+}
+
+export interface MapRuntimeSnapshot {
+  scope: {
+    worldId: string;
+    timelineId: string;
+    mapId: string;
+  };
+  onlineUserCharacterIds: string[];
+  resourceNodeCount: number;
+  resourceNodesReady: boolean;
+  lastActiveAt: string;
+}
+
+export interface BuildPlayerState {
+  id: string;
+  name: string;
+  pixelX: number;
+  pixelY: number;
+  resources: number;
+  isMoving: boolean;
+}
+
+export interface BuildCosts {
+  character: number;
+  mapExpand: number;
+  item: number;
+}
+
+export interface BuildState {
+  resources: number;
+  playerState: BuildPlayerState;
+  costs: BuildCosts;
+  resourceNodes: BuildResourceNode[];
+  mapNodes?: MapNodesState;
+  mapRuntimes?: MapRuntimeSnapshot[];
+}
+
+export interface BuildJobStatus {
+  jobId: string;
+  status: "pending" | "running" | "done" | "error";
+  progress: number;
+  total: number;
+  message?: string;
+  error?: string;
+  result?: unknown;
+  logs?: string[];
+  requiresReload?: boolean;
+  validation?: {
+    passed: boolean;
+    issues: string[];
+  };
+}

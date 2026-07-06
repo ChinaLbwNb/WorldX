@@ -1,0 +1,69 @@
+{
+  "id": "map_1_0_mr4wd4od",
+  "name": "海边港口",
+  "sourceMapId": "map_origin",
+  "userPrompt": "海边港口",
+  "gridWidth": 256,
+  "gridHeight": 256,
+  "tileSize": 4,
+  "spawn": {
+    "id": "map_1_0_mr4wd4od_spawn",
+    "name": "入口空地",
+    "x": 514,
+    "y": 514,
+    "adjacentPointIds": [
+      "map_1_0_mr4wd4od_point_2",
+      "map_1_0_mr4wd4od_point_3",
+      "map_1_0_mr4wd4od_point_4"
+    ]
+  },
+  "createdAt": "2026-07-03T12:29:44.267Z",
+  "pipeline": {
+    "runId": "map_1_0_mr4wd4od",
+    "warnings": [
+      "Step 4: 可行走区域标注 review 最终未通过"
+    ],
+    "steps": {
+      "step1": {
+        "imageSize": "1K",
+        "width": 1024,
+        "height": 1024,
+        "bytes": 1939027,
+        "reviewPassed": true,
+        "attempts": 1
+      },
+      "step2": {
+        "width": 1024,
+        "height": 1024,
+        "originalBytes": 1939027,
+        "compressedBytes": 727553,
+        "savedBytes": 1211474,
+        "strategy": "low_loss_palette_png"
+      },
+      "step3": {
+        "source": "world_design",
+        "preparedRegionCount": 3,
+        "regionCount": 3,
+        "reviewPassed": true,
+        "attempts": 1,
+        "droppedRegionIds": []
+      },
+      "step3_2": {
+        "elementCount": 2,
+        "reviewPassed": true,
+        "attempts": 1,
+        "droppedElementIds": []
+      },
+      "step4": {
+        "bytes": 1791538,
+        "reviewPassed": false,
+        "attempts": 4
+      },
+      "step5": {
+        "gridWidth": 256,
+        "gridHeight": 256,
+        "tileSize": 4
+      }
+    }
+  }
+}

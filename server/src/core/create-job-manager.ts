@@ -4,6 +4,9 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { writeWorldAccessMetadata } from "../utils/world-directories.js";
+import * as accountAssets from "../store/account-asset-store.js";
+import { getDataDir } from "../utils/data-dir.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,7 +14,7 @@ const __dirname = path.dirname(__filename);
 // `server/src/core` is 3 levels below WorldX root.
 const WORLDSPARK_ROOT = path.resolve(__dirname, "../../..");
 const ORCHESTRATOR_ENTRY = path.join(WORLDSPARK_ROOT, "orchestrator/src/index.mjs");
-const GENERATED_WORLDS_DIR = path.join(WORLDSPARK_ROOT, "output/worlds");
+const GENERATED_WORLDS_DIR = getDataDir("worlds");
 const JOB_LOG_DIRNAME = "logs";
 const JOB_LOG_FILENAME = "generation.log";
 
@@ -57,6 +60,7 @@ interface ActiveJob {
   step: string | null;
   worldId: string | null;
   worldName: string | null;
+  ownerUserId: string;
   error: string | null;
   events: JobEvent[];
   logTail: string[];
@@ -134,7 +138,7 @@ class CreateJobManager extends EventEmitter {
     this.finishError(job, "Generation stopped by user");
   }
 
-  startJob(params: { prompt: string; sizeK: 1 | 2 | 4; keepArtifacts?: boolean }): { jobId: string } {
+  startJob(params: { prompt: string; sizeK: 1 | 2 | 4; keepArtifacts?: boolean; ownerUserId: string }): { jobId: string } {
     if (this.hasActiveJob()) {
       throw new JobConflictError(this.current!.jobId);
     }
@@ -176,6 +180,7 @@ class CreateJobManager extends EventEmitter {
       step: null,
       worldId: null,
       worldName: null,
+      ownerUserId: params.ownerUserId,
       error: null,
       events: [],
       logTail: [],
@@ -287,6 +292,7 @@ class CreateJobManager extends EventEmitter {
           `=== WorldX Generation Log — ${new Date(job.startedAt).toISOString()} ===`,
           `Job ID: ${job.jobId}`,
           `World ID: ${worldId}`,
+          `Owner User ID: ${job.ownerUserId}`,
           `Prompt: ${job.prompt}`,
           "",
         ].join("\n"),
@@ -413,12 +419,37 @@ class CreateJobManager extends EventEmitter {
     job.status = "done";
     job.finishedAt = Date.now();
     this.clearHardTimeout(job);
+    this.persistWorldOwner(job);
     this.recordEvent(job, {
       kind: "job_done",
       at: job.finishedAt,
       worldId: job.worldId ?? "",
       worldName: job.worldName ?? undefined,
     });
+  }
+
+  private persistWorldOwner(job: ActiveJob): void {
+    if (!job.worldId) return;
+    try {
+      writeWorldAccessMetadata(path.join(GENERATED_WORLDS_DIR, job.worldId), {
+        ownerUserId: job.ownerUserId,
+        visibility: "private",
+      });
+      accountAssets.ensureWorldAsset({
+        userId: job.ownerUserId,
+        worldId: job.worldId,
+        source: "user",
+        visibility: "private",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.recordEvent(job, {
+        kind: "log",
+        at: Date.now(),
+        stream: "stderr",
+        line: `[CreateJobManager] Failed to persist world owner metadata: ${message}`,
+      });
+    }
   }
 
   private finishError(job: ActiveJob, message: string) {
@@ -464,7 +495,7 @@ class CreateJobManager extends EventEmitter {
 
   private withLogHint(message: string, worldId: string | null): string {
     if (!worldId) return message;
-    return `${message}. Check logs in output/worlds/${worldId}/${JOB_LOG_DIRNAME}/`;
+    return `${message}. Check logs in ${path.join(GENERATED_WORLDS_DIR, worldId, JOB_LOG_DIRNAME)}/`;
   }
 }
 

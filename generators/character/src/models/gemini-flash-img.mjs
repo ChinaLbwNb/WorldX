@@ -4,7 +4,7 @@
  */
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
-const DEFAULT_MODEL = "google/gemini-3.1-flash-image-preview";
+const DEFAULT_MODEL = "MaaS_Ge_2.5_flash_image_20251002";
 const MODEL = process.env.IMAGE_GEN_MODEL || DEFAULT_MODEL;
 const BASE_URL = process.env.IMAGE_GEN_BASE_URL || DEFAULT_BASE_URL;
 const PROVIDER = (process.env.IMAGE_GEN_PROVIDER || "").trim().toLowerCase();

@@ -3,9 +3,12 @@ import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { apiClient } from "../services/api-client";
 import type { TimelineWithWorld, TimelineMeta } from "../../types/api";
+import { networkManager } from "../../systems/NetworkManager";
+import { darkGlassPanelStyle, useFloatingWindowZIndex } from "../components/panel-styles";
 
 export function TimelineManagerModal({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
+  const { zIndex, bringToFront } = useFloatingWindowZIndex(true, 840);
   const [groups, setGroups] = useState<TimelineWithWorld[]>([]);
   const [currentTimelineId, setCurrentTimelineId] = useState<string | null>(null);
   const [expandedWorldId, setExpandedWorldId] = useState<string | null>(null);
@@ -14,7 +17,7 @@ export function TimelineManagerModal({ onClose }: { onClose: () => void }) {
 
   const loadData = () => {
     setLoading(true);
-    apiClient.getAllTimelinesGrouped()
+    apiClient.getAllTimelinesGrouped(networkManager.getSelectedUserCharacterId() || undefined)
       .then((response) => {
         setGroups(response.groups);
         setCurrentTimelineId(response.currentTimelineId);
@@ -99,7 +102,7 @@ export function TimelineManagerModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div style={backdropStyle} onClick={onClose}>
+    <div style={{ ...backdropStyle, zIndex }} onClick={onClose} onPointerDown={bringToFront}>
       <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
         <div style={headerStyle}>
           <span style={{ fontWeight: 700, fontSize: 15 }}>{t("manager.title")}</span>
@@ -141,7 +144,7 @@ export function TimelineManagerModal({ onClose }: { onClose: () => void }) {
                     {isActiveWorld && (
                       <span style={activeBadgeStyle}>{t("manager.active")}</span>
                     )}
-                    {!isActiveWorld && group.source !== "library" && (
+                    {!isActiveWorld && group.source !== "library" && group.canManage && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -164,6 +167,7 @@ export function TimelineManagerModal({ onClose }: { onClose: () => void }) {
                       ) : (
                         group.timelines.map((tl) => {
                           const isActiveTl = tl.id === currentTimelineId;
+                          const canDeleteTimeline = group.source !== "library" && !isActiveTl;
                           return (
                             <div key={tl.id} style={timelineRowStyle}>
                               <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
@@ -180,9 +184,9 @@ export function TimelineManagerModal({ onClose }: { onClose: () => void }) {
                                   </span>
                                 </div>
                               </div>
-                              {isActiveTl ? (
+                              {isActiveTl || group.source === "library" ? (
                                 <span style={activeBadgeStyle}>{t("manager.active")}</span>
-                              ) : (
+                              ) : canDeleteTimeline ? (
                                 <button
                                   onClick={() => handleDeleteTimeline(group.worldId, tl)}
                                   disabled={deletingId === tl.id}
@@ -190,7 +194,7 @@ export function TimelineManagerModal({ onClose }: { onClose: () => void }) {
                                 >
                                   {deletingId === tl.id ? "..." : t("manager.delete")}
                                 </button>
-                              )}
+                              ) : null}
                             </div>
                           );
                         })
@@ -222,10 +226,8 @@ const panelStyle: CSSProperties = {
   width: 480,
   maxWidth: "90vw",
   maxHeight: "80vh",
-  background: "rgba(14, 18, 36, 0.98)",
-  border: "1px solid rgba(255,255,255,0.12)",
+  ...darkGlassPanelStyle,
   borderRadius: 16,
-  boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
   display: "flex",
   flexDirection: "column",
   overflow: "hidden",

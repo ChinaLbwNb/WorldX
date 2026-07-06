@@ -1,0 +1,61 @@
+[
+  {
+    "id": "map_1_0_mr4wd4od_hub",
+    "name": "月下庭院",
+    "description": "玩家传送进入后的主要开阔活动区。",
+    "type": "outdoor",
+    "enterable": false,
+    "shapeConstraint": "flexible",
+    "placementHint": "地图中央或主要道路交汇处",
+    "visualDescription": "开阔、可行走、和周围道路连通",
+    "actions": [
+      "map_1_0_mr4wd4od_rest"
+    ],
+    "adjacentRegions": [],
+    "interactions": [
+      {
+        "id": "map_1_0_mr4wd4od_rest",
+        "name": "观察环境",
+        "description": "在新区域观察周围动向。",
+        "availableWhenState": [
+          "available"
+        ],
+        "duration": 2,
+        "effects": [
+          {
+            "type": "character_memory",
+            "target": "observation",
+            "value": 1
+          }
+        ],
+        "repeatable": true
+      }
+    ]
+  },
+  {
+    "id": "map_1_0_mr4wd4od_landmark",
+    "name": "屋舍",
+    "description": "代表该地图主题特色的建筑或地点。",
+    "type": "building",
+    "enterable": true,
+    "shapeConstraint": "rectangular",
+    "placementHint": "靠近地图一侧但不要贴边",
+    "visualDescription": "具有辨识度的主要建筑或设施",
+    "actions": [],
+    "adjacentRegions": [],
+    "interactions": []
+  },
+  {
+    "id": "map_1_0_mr4wd4od_path",
+    "name": "步道",
+    "description": "连接出生点、资源点和地标的道路或街巷。",
+    "type": "outdoor",
+    "enterable": false,
+    "shapeConstraint": "flexible",
+    "placementHint": "贯穿地图，与中心区域连接",
+    "visualDescription": "连续可行走道路",
+    "actions": [],
+    "adjacentRegions": [],
+    "interactions": []
+  }
+]
