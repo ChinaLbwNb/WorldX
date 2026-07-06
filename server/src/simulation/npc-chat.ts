@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { AppContext } from "../services/app-context.js";
+import { resolveScopedCharacterRuntime } from "../utils/scoped-character-runtime.js";
 
 /**
  * 公屏 @NPC 一次性对话生成。
@@ -23,13 +24,13 @@ interface NpcThread {
 
 const threads = new Map<string, NpcThread>();
 
-function getThread(characterId: string, now: number): NpcThread {
-  const existing = threads.get(characterId);
+function getThread(threadKey: string, now: number): NpcThread {
+  const existing = threads.get(threadKey);
   if (existing && now - existing.lastActiveAt <= HISTORY_IDLE_MS) {
     return existing;
   }
   const fresh: NpcThread = { history: [], lastActiveAt: now };
-  threads.set(characterId, fresh);
+  threads.set(threadKey, fresh);
   return fresh;
 }
 
@@ -48,12 +49,16 @@ export async function generateNpcReply(
   askerName: string,
   question: string,
   nowMs: number,
+  options: { worldDir?: string; threadScopeId?: string } = {},
 ): Promise<NpcReplyResult> {
-  const profile = ctx.characterManager.getProfile(characterId); // 不存在会抛错，由调用方捕获
-  const state = ctx.characterManager.getState(characterId);
+  const { profile, state, isActiveRuntimeWorld } = resolveScopedCharacterRuntime(
+    ctx,
+    characterId,
+    options.worldDir,
+  );
   const gameTime = ctx.worldManager.getCurrentTime();
 
-  const thread = getThread(characterId, nowMs);
+  const thread = getThread(options.threadScopeId ?? characterId, nowMs);
 
   // 提问内容前缀提问者昵称，让 NPC 知道是谁在公屏里跟它说话
   const askerLabel = askerName.trim() || "一位旅行者";
@@ -68,13 +73,15 @@ export async function generateNpcReply(
     .filter((k) => k.length >= 2)
     .slice(0, 20);
 
-  const memories = ctx.characterManager.memoryManager.retrieveMemories({
-    characterId,
-    currentTime: gameTime,
-    contextKeywords,
-    relatedLocation: state.location,
-    topK: 8,
-  });
+  const memories = isActiveRuntimeWorld
+    ? ctx.characterManager.memoryManager.retrieveMemories({
+        characterId,
+        currentTime: gameTime,
+        contextKeywords,
+        relatedLocation: state.location,
+        topK: 8,
+      })
+    : [];
   const memoriesBlock =
     memories.length > 0 ? memories.map((m) => `- ${m.content}`).join("\n") : "";
 

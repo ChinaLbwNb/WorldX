@@ -6,12 +6,13 @@ import type { BuildJobStatus } from "../types/build.js";
 import type { CharacterProfile } from "../types/index.js";
 import type { CharacterManager } from "./character-manager.js";
 import type { WorldManager } from "./world-manager.js";
+import { getDataDir } from "../utils/data-dir.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SERVER_ROOT = path.resolve(__dirname, "../..");
 const GENERATOR_SCRIPT = path.resolve(SERVER_ROOT, "../generators/character/src/index.mjs");
-const GENERATOR_OUTPUT_DIR = path.resolve(SERVER_ROOT, "../output/characters");
+const GENERATOR_OUTPUT_DIR = getDataDir("characters");
 
 const TOTAL_STEPS = 4;
 
@@ -19,6 +20,13 @@ interface BuildJob extends BuildJobStatus {
   charId?: string;
   charName?: string;
   prompt: string;
+}
+
+interface BuildJobOptions {
+  worldDir?: string;
+  worldVisualContext?: string;
+  onFailure?: (error: unknown) => void;
+  failureMessage?: string;
 }
 
 export class CharacterBuilder {
@@ -34,7 +42,7 @@ export class CharacterBuilder {
    * 启动一个角色生成任务。
    * 返回 jobId，可用于轮询进度。
    */
-  startBuildJob(prompt: string): { jobId: string } {
+  startBuildJob(prompt: string, options: BuildJobOptions = {}): { jobId: string } {
     const jobId = `char_build_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const job: BuildJob = {
       jobId,
@@ -47,14 +55,16 @@ export class CharacterBuilder {
     this.jobs.set(jobId, job);
 
     // 异步启动生成流程
-    this.runBuildJob(jobId, prompt).catch((err) => {
+    this.runBuildJob(jobId, prompt, options).catch((err) => {
       console.error(`[CharacterBuilder] Job ${jobId} failed:`, err);
       const j = this.jobs.get(jobId);
       if (j && j.status === "running") {
         j.status = "error";
         j.error = err instanceof Error ? err.message : String(err);
+        j.message = options.failureMessage ?? "角色生成失败";
         j.finishedAt = Date.now();
       }
+      options.onFailure?.(err);
     });
 
     return { jobId };
@@ -72,16 +82,16 @@ export class CharacterBuilder {
     return status as BuildJobStatus;
   }
 
-  private async runBuildJob(jobId: string, prompt: string): Promise<void> {
+  private async runBuildJob(jobId: string, prompt: string, options: BuildJobOptions): Promise<void> {
     const job = this.jobs.get(jobId);
     if (!job) return;
 
-    const worldDir = this.getWorldDir();
+    const worldDir = options.worldDir || this.getWorldDir();
     if (!worldDir) {
       throw new Error("No active world");
     }
 
-    const worldVisualContext = this.worldManager.getWorldDescription() || "";
+    const worldVisualContext = options.worldVisualContext || this.worldManager.getWorldDescription() || "";
 
     // 构造命令参数
     const args: string[] = [
@@ -99,6 +109,7 @@ export class CharacterBuilder {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
+        CHAR_OUTPUT_DIR: GENERATOR_OUTPUT_DIR,
       },
     });
 
@@ -222,16 +233,18 @@ export class CharacterBuilder {
       JSON.stringify(profile, null, 2),
     );
 
-    // 3. 加入 characterManager（运行时注册 + 初始化 state）
-    // 使用 main_area 随机可行走点作为初始位置
-    const center = this.worldManager.getMainAreaCenterPixel();
-    const walkable = this.worldManager.findWalkablePixelNear(center.x, center.y);
-
-    this.characterManager.addCharacter(profile, {
-      location: "main_area",
-      // mainAreaPointId 由 addCharacter 内部自动分配（通过 buildInitialCharacterState）
-      ...(walkable ? {} : {}),
-    });
+    // 3. 若生成目标就是当前全局 runtime 世界，立即注册到 CharacterManager。
+    // 非当前世界只写入世界包文件，由 scoped /api/characters 读取，避免串进别的世界。
+    const activeWorldDir = this.getWorldDir();
+    if (activeWorldDir && path.resolve(activeWorldDir) === path.resolve(worldDir)) {
+      const center = this.worldManager.getMainAreaCenterPixel();
+      const walkable = this.worldManager.findWalkablePixelNear(center.x, center.y);
+      this.characterManager.addCharacter(profile, {
+        location: "main_area",
+        // mainAreaPointId 由 addCharacter 内部自动分配（通过 buildInitialCharacterState）
+        ...(walkable ? {} : {}),
+      });
+    }
 
     // 4. 更新 job 状态为完成
     const job = this.jobs.get(jobId);

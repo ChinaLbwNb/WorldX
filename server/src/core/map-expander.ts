@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { BuildJobStatus } from "../types/build.js";
 import type { WorldManager } from "./world-manager.js";
 import type { ResourceManager } from "./resource-manager.js";
+import type { MapSpawnPointConfig, WorldConfig, WorldMapLinkConfig, WorldMapNodeConfig } from "../types/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,6 +13,7 @@ const SERVER_ROOT = path.resolve(__dirname, "../..");
 const MAP_NODE_SCRIPT = path.resolve(SERVER_ROOT, "../generators/map/src/generate-map-node.mjs");
 
 const TOTAL_STEPS = 6;
+const ORIGIN_MAP_ID = "map_origin";
 
 interface ExpandJob extends BuildJobStatus {
   prompt: string;
@@ -23,13 +25,15 @@ interface ExpandJob extends BuildJobStatus {
 interface StartExpandJobInput {
   prompt?: string;
   ownerUserId: string;
+  worldDir?: string;
+  sourceMapId?: string;
 }
 
 export class MapExpander {
   private jobs = new Map<string, ExpandJob>();
 
   constructor(
-    private worldManager: WorldManager,
+    _worldManager: WorldManager,
     private getWorldDir: () => string | undefined,
     private resourceManager?: ResourceManager,
   ) {}
@@ -39,11 +43,11 @@ export class MapExpander {
    * 返回 jobId，可用于轮询进度。
    */
   startExpandJob(input: StartExpandJobInput): { jobId: string } {
-    const worldDir = this.getWorldDir();
+    const worldDir = input.worldDir || this.getWorldDir();
     if (!worldDir) {
       throw new Error("No active world");
     }
-    const request = this.resolveMapNodeRequest(input);
+    const request = this.resolveMapNodeRequest(input, worldDir);
 
     const jobId = `map_expand_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const job: ExpandJob = {
@@ -78,21 +82,25 @@ export class MapExpander {
     return { jobId };
   }
 
-	  private resolveMapNodeRequest(input: StartExpandJobInput): {
+  private resolveMapNodeRequest(input: StartExpandJobInput, worldDir: string): {
     sourceMapId: string;
     gridX: number;
     gridY: number;
     prompt: string;
     ownerUserId: string;
   } {
-    const state = this.worldManager.getWorldMapsState();
     const prompt = (input.prompt || "").trim();
     if (!prompt) {
       throw new Error("prompt is required for map node generation");
     }
-    const sourceMapId = state.activeMapId;
-    const occupied = new Set(state.maps.map((map) => `${map.gridX},${map.gridY}`));
-    let gridX = state.maps.length;
+    const config = readWorldConfig(worldDir);
+    const mapNodes = normalizeMapNodes(config, config.worldName || "初始地图");
+    const requestedSourceMapId = input.sourceMapId || config.activeMapId || ORIGIN_MAP_ID;
+    const sourceMapId = mapNodes.some((map) => map.id === requestedSourceMapId)
+      ? requestedSourceMapId
+      : ORIGIN_MAP_ID;
+    const occupied = new Set(mapNodes.map((map) => `${map.gridX},${map.gridY}`));
+    let gridX = mapNodes.length;
     while (occupied.has(`${gridX},0`)) {
       gridX += 1;
     }
@@ -123,7 +131,7 @@ export class MapExpander {
     job.progress = 20;
     job.message = "准备独立地图节点生成...";
 
-    const sourceDir = this.worldManager.getMapDir(request.sourceMapId);
+    const sourceDir = getMapDir(worldDir, request.sourceMapId);
     if (!sourceDir || !fs.existsSync(sourceDir)) {
       throw new Error(`Source map package not found: ${request.sourceMapId}`);
     }
@@ -155,11 +163,12 @@ export class MapExpander {
     const spawn =
       result?.spawn && Number.isFinite(result.spawn.x) && Number.isFinite(result.spawn.y)
         ? { x: Math.round(result.spawn.x), y: Math.round(result.spawn.y) }
-        : this.worldManager.getMainAreaCenterPixel();
+        : getMapCenterPixel(targetDir);
 
     job.progress = 70;
     job.message = "更新世界地图拓扑...";
-    this.worldManager.appendMapNode(
+    appendMapNodeToWorldConfig(
+      worldDir,
       {
         id: targetMapId,
         name: targetName,
@@ -317,4 +326,134 @@ export class MapExpander {
     }
     return null;
   }
+}
+
+function readWorldConfig(worldDir: string): Partial<WorldConfig> {
+  const configPath = path.join(worldDir, "config", "world.json");
+  if (!fs.existsSync(configPath)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf-8")) as Partial<WorldConfig>;
+  } catch (error) {
+    console.warn(`[MapExpander] Failed to read world config: ${configPath}`, error);
+    return {};
+  }
+}
+
+function writeWorldConfig(worldDir: string, config: Partial<WorldConfig>): void {
+  const configDir = path.join(worldDir, "config");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, "world.json"), `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+}
+
+function normalizeMapNodes(config: Partial<WorldConfig>, originName: string): WorldMapNodeConfig[] {
+  const maps = Array.isArray(config.mapNodes) ? config.mapNodes : [];
+  const normalized = maps
+    .filter((map): map is WorldMapNodeConfig =>
+      !!map &&
+      typeof map.id === "string" &&
+      isSafeMapId(map.id) &&
+      typeof map.gridX === "number" &&
+      typeof map.gridY === "number",
+    )
+    .map((map) => ({
+      ...map,
+      mapDir: map.mapDir || map.id,
+      previewImage: map.previewImage || "background-preview.png",
+      status: map.status || "available",
+      createdAt: map.createdAt || new Date(0).toISOString(),
+    }));
+  if (!normalized.some((map) => map.id === ORIGIN_MAP_ID)) {
+    normalized.unshift({
+      id: ORIGIN_MAP_ID,
+      name: originName || "初始地图",
+      gridX: 0,
+      gridY: 0,
+      status: "available",
+      mapDir: ORIGIN_MAP_ID,
+      previewImage: "background-preview.png",
+      createdAt: new Date(0).toISOString(),
+    });
+  }
+  return normalized;
+}
+
+function normalizeSpawnPoints(points: MapSpawnPointConfig[] | undefined): MapSpawnPointConfig[] {
+  if (!Array.isArray(points)) return [];
+  return points.filter((point): point is MapSpawnPointConfig =>
+    !!point &&
+    typeof point.mapId === "string" &&
+    typeof point.id === "string" &&
+    typeof point.x === "number" &&
+    typeof point.y === "number",
+  );
+}
+
+function normalizeLinks(links: WorldMapLinkConfig[] | undefined): WorldMapLinkConfig[] {
+  if (!Array.isArray(links)) return [];
+  return links.filter((link): link is WorldMapLinkConfig =>
+    !!link &&
+    typeof link.fromMapId === "string" &&
+    typeof link.toMapId === "string",
+  );
+}
+
+function appendMapNodeToWorldConfig(
+  worldDir: string,
+  node: WorldMapNodeConfig,
+  spawnPoint: MapSpawnPointConfig,
+): void {
+  const config = readWorldConfig(worldDir);
+  const mapNodes = normalizeMapNodes(config, config.worldName || "初始地图")
+    .filter((map) => map.id !== node.id);
+  const spawnPoints = normalizeSpawnPoints(config.mapSpawnPoints)
+    .filter((point) => point.id !== spawnPoint.id);
+  const links = normalizeLinks(config.mapLinks);
+  const hasLink = links.some((link) => link.fromMapId === node.source?.fromMapId && link.toMapId === node.id);
+  const nextLinks = hasLink || !node.source?.fromMapId
+    ? links
+    : [...links, { fromMapId: node.source.fromMapId, toMapId: node.id, label: "地图节点" }];
+
+  writeWorldConfig(worldDir, {
+    ...config,
+    mapNodes: [...mapNodes, node],
+    mapSpawnPoints: [...spawnPoints, spawnPoint],
+    mapLinks: nextLinks,
+  });
+}
+
+function getMapDir(worldDir: string, mapId: string): string | null {
+  if (!isSafeMapId(mapId)) return null;
+  const config = readWorldConfig(worldDir);
+  const mapNode = normalizeMapNodes(config, config.worldName || "初始地图").find((map) => map.id === mapId);
+  const mapDirName = mapNode?.mapDir || mapId;
+  if (!isSafeMapId(mapDirName)) return null;
+  const mapsRoot = path.resolve(worldDir, "maps");
+  const candidate = path.resolve(mapsRoot, mapDirName);
+  if (!candidate.startsWith(mapsRoot + path.sep) && candidate !== mapsRoot) return null;
+  return candidate;
+}
+
+function getMapCenterPixel(mapDir: string): { x: number; y: number } {
+  const tmjPath = path.join(mapDir, "06-final.tmj");
+  if (!fs.existsSync(tmjPath)) return { x: 0, y: 0 };
+  try {
+    const tmj = JSON.parse(fs.readFileSync(tmjPath, "utf-8")) as {
+      width?: number;
+      height?: number;
+      tilewidth?: number;
+      tileheight?: number;
+    };
+    const tileWidth = Number(tmj.tilewidth) || 32;
+    const tileHeight = Number(tmj.tileheight) || tileWidth;
+    return {
+      x: Math.round((Number(tmj.width) || 0) * tileWidth / 2),
+      y: Math.round((Number(tmj.height) || 0) * tileHeight / 2),
+    };
+  } catch {
+    return { x: 0, y: 0 };
+  }
+}
+
+function isSafeMapId(value: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(value);
 }

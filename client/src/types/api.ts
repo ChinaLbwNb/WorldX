@@ -149,6 +149,8 @@ export interface TimelineWithWorld {
   worldId: string;
   worldName: string;
   source?: "user" | "library";
+  canManage?: boolean;
+  role?: "owner" | "admin" | "builder" | "viewer" | "public" | null;
   isCurrent: boolean;
   timelines: TimelineMeta[];
 }
@@ -209,10 +211,10 @@ export interface WorldMapLinkInfo {
   label?: string;
 }
 
-export interface WorldMapsState {
+export interface MapNodesState {
   currentWorldId: string;
   activeMapId: string;
-  maps: WorldMapNodeInfo[];
+  mapNodes: WorldMapNodeInfo[];
   links: WorldMapLinkInfo[];
   currentPlayerMapId: string;
   mapRuntimes?: MapRuntimeSnapshot[];
@@ -250,7 +252,7 @@ export interface BuildState {
   playerState: BuildPlayerState;
   costs: BuildCosts;
   resourceNodes: BuildResourceNode[];
-  worldMaps?: WorldMapsState;
+  mapNodes?: MapNodesState;
   mapRuntimes?: MapRuntimeSnapshot[];
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { apiClient } from "../services/api-client";
+import { networkManager } from "../../systems/NetworkManager";
 import type {
   CharacterInfo,
   DialogueEventData,
@@ -8,6 +9,7 @@ import type {
   SimulationEvent,
 } from "../../types/api";
 import { buildCharacterNameMap } from "../utils/event-format";
+import { darkGlassSubtlePanelStyle } from "../components/panel-styles";
 
 interface DialogueSession {
   conversationId: string;
@@ -40,7 +42,9 @@ export function DialoguePanel({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    apiClient.getCharacters().then(setCharacters).catch(console.warn);
+    apiClient.getCharacters(networkManager.getSelectedUserCharacterId() || undefined)
+      .then(setCharacters)
+      .catch(console.warn);
   }, []);
 
   const sessions = useMemo(() => {
@@ -161,12 +165,9 @@ export function DialoguePanel({
       <div
         onClick={() => setCollapsed((v) => !v)}
         style={{
-          background:
-            "linear-gradient(180deg, rgba(20,20,40,0.92), rgba(20,20,40,0.98))",
-          backdropFilter: "blur(12px)",
+          ...darkGlassSubtlePanelStyle,
           borderRadius: collapsed ? 12 : "12px 12px 0 0",
           padding: "10px 14px",
-          border: "1px solid rgba(255,255,255,0.1)",
           borderBottom:
             !collapsed && current ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(255,255,255,0.1)",
           display: "flex",
@@ -226,8 +227,7 @@ export function DialoguePanel({
             gap: 4,
             overflowX: "auto",
             padding: "6px 6px 0",
-            background:
-              "linear-gradient(180deg, rgba(20,20,40,0.95), rgba(20,20,40,0.98))",
+            background: String(darkGlassSubtlePanelStyle.background),
             borderLeft: "1px solid rgba(255,255,255,0.1)",
             borderRight: "1px solid rgba(255,255,255,0.1)",
           }}
@@ -283,12 +283,9 @@ export function DialoguePanel({
       {!collapsed && current && (
         <div
           style={{
-            background:
-              "linear-gradient(180deg, rgba(20,20,40,0.95), rgba(20,20,40,0.98))",
-            backdropFilter: "blur(12px)",
+            ...darkGlassSubtlePanelStyle,
             borderRadius: visibleSessions.length > 1 ? "0 0 12px 12px" : "0 0 12px 12px",
             padding: "12px 16px",
-            border: "1px solid rgba(255,255,255,0.1)",
             borderTop: "none",
             maxHeight: 220,
             display: "flex",

@@ -22,6 +22,8 @@ const itemCategories = [
 const ITEM_BG_HARD_THRESHOLD = 24;
 const ITEM_BG_SOFT_THRESHOLD = 48;
 const ITEM_BG_MAX_PALETTE_COLORS = 8;
+const DEFAULT_ITEM_IMAGE_TIMEOUT_MS = 180_000;
+const ITEM_IMAGE_MAX_ATTEMPTS = 2;
 
 const generatedItemSchema = z.object({
   name: z.string().min(1).max(32),
@@ -36,7 +38,10 @@ const generatedItemSchema = z.object({
   }),
   ).default({ width: 1, height: 1 }),
   blocksMovement: z.boolean().default(true),
-  interactionHints: z.array(z.string().min(1).max(24)).max(4).default([]),
+  interactionHints: z.preprocess(
+    normalizeInteractionHintsInput,
+    z.array(z.string().min(1).max(24)).max(4).default([]),
+  ),
   visualPrompt: z.string().min(1).max(220),
 });
 
@@ -84,6 +89,7 @@ export class ItemGenerator {
         metadata: {
           source: "ai_item_generation",
           prompt: input.prompt,
+          usable: false,
           footprintTiles: design.footprintTiles,
           blocksMovement: design.blocksMovement,
           interactionHints: design.interactionHints,
@@ -125,6 +131,7 @@ export class ItemGenerator {
               `世界观摘要：${worldDescription || "未提供"}\n` +
               `用户想生成的物品：${prompt}\n\n` +
               "要求：如果是家具、小建筑、装饰、容器，placeable=true；如果像药水、食物、任务物则可为 false。" +
+              "当前生成物品只作为账号资产、背包物和地图摆放素材，不生成背包内“使用”效果；interactionHints 只描述摆放到地图后的交互想象。" +
               "category 必须使用英文枚举：tool, food, equipment, quest, furniture, decoration, container, misc；不要输出中文类别。" +
               "footprintTiles 必须是对象 {\"width\":数字,\"height\":数字}，表示摆放占用 tile；常见小物 1x1，床铺/桌椅 2x1 或 2x2，小建筑 3x3 到 6x6。" +
               "visualPrompt 用于后续生成像素风/俯视角地图素材，要贴合世界风格。",
@@ -227,6 +234,19 @@ function normalizeFootprintTilesInput(value: unknown): unknown {
     width: width ?? 1,
     height: height ?? width ?? 1,
   };
+}
+
+function normalizeInteractionHintsInput(value: unknown): unknown {
+  const rawItems = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[，,;；\n]/)
+      : [];
+  return rawItems
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+    .map((item) => item.slice(0, 24))
+    .slice(0, 4);
 }
 
 function normalizeGeneratedDesign(design: GeneratedItemDesign): GeneratedItemDesign {
@@ -337,7 +357,33 @@ async function generateItemImagePng(prompt: string): Promise<Buffer> {
   const model = process.env.ITEM_ASSET_IMAGE_MODEL || process.env.IMAGE_GEN_MODEL || "MaaS_Ge_2.5_flash_image_20251002";
   const baseUrl = (process.env.IMAGE_GEN_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
   const provider = (process.env.IMAGE_GEN_PROVIDER || "").trim().toLowerCase();
-  const timeoutMs = Math.max(10_000, Number(process.env.ITEM_ASSET_IMAGE_TIMEOUT_MS || process.env.IMAGE_GEN_TIMEOUT_MS || 60_000));
+  const timeoutMs = Math.max(10_000, Number(process.env.ITEM_ASSET_IMAGE_TIMEOUT_MS || process.env.IMAGE_GEN_TIMEOUT_MS || DEFAULT_ITEM_IMAGE_TIMEOUT_MS));
+
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= ITEM_IMAGE_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await requestItemImagePng({ prompt, apiKey, model, baseUrl, provider, timeoutMs });
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt >= ITEM_IMAGE_MAX_ATTEMPTS || !isRetryableImageError(message)) {
+        throw error;
+      }
+      console.warn(`[ItemGenerator] Image generation attempt ${attempt} failed, retrying: ${message}`);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "物品图片生成失败"));
+}
+
+async function requestItemImagePng(input: {
+  prompt: string;
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+  provider: string;
+  timeoutMs: number;
+}): Promise<Buffer> {
+  const { prompt, apiKey, model, baseUrl, provider, timeoutMs } = input;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -383,6 +429,10 @@ async function generateItemImagePng(prompt: string): Promise<Buffer> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isRetryableImageError(message: string): boolean {
+  return /timeout|timed out|超时|超过| 429| 500| 502| 503| 504|ECONNRESET|ETIMEDOUT/i.test(message);
 }
 
 function isGoogleNativeProvider(provider: string, baseUrl: string): boolean {

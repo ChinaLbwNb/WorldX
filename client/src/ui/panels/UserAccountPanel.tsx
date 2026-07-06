@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { networkManager } from "../../systems/NetworkManager";
 import { apiClient, type AuthUserInfo } from "../services/api-client";
+import { centeredWindowStyle, useFloatingWindowZIndex } from "../components/panel-styles";
 
 export function UserAccountPanel({
   open,
@@ -17,6 +18,7 @@ export function UserAccountPanel({
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const { zIndex, bringToFront } = useFloatingWindowZIndex(open, 840);
 
   const refresh = useCallback(async () => {
     if (!open || !networkManager.getAuthToken()) {
@@ -72,8 +74,24 @@ export function UserAccountPanel({
     }
   };
 
+  const deleteAccount = async () => {
+    if (!authUser || busy) return;
+    const confirmed = window.confirm("删除当前账号？这会删除账号下的角色、物品、资源、世界索引和会话。此操作不能撤销。");
+    if (!confirmed) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiClient.deleteUser(authUser.id);
+      networkManager.clearAuthSession();
+      window.location.assign("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
   return (
-    <aside style={panelStyle}>
+    <aside style={{ ...panelStyle, zIndex }} onPointerDown={bringToFront}>
       <header style={headerStyle}>
         <div>
           <div style={titleStyle}>账号</div>
@@ -92,6 +110,9 @@ export function UserAccountPanel({
           </div>
           <button onClick={() => void logout()} disabled={busy} style={primaryButtonStyle}>
             退出登录
+          </button>
+          <button onClick={() => void deleteAccount()} disabled={busy} style={dangerButtonStyle}>
+            删除账号
           </button>
           {error && <div style={errorStyle}>{error}</div>}
         </section>
@@ -142,20 +163,7 @@ export function UserAccountPanel({
 }
 
 const panelStyle: CSSProperties = {
-  position: "fixed",
-  right: 18,
-  top: "calc(var(--top-ui-offset, 52px) + 14px)",
-  width: 340,
-  maxWidth: "calc(100vw - 36px)",
-  maxHeight: "calc(100vh - var(--top-ui-offset, 52px) - 28px)",
-  zIndex: 795,
-  pointerEvents: "auto",
-  border: "1px solid rgba(255,255,255,0.12)",
-  background: "rgba(17, 22, 32, 0.96)",
-  boxShadow: "0 18px 45px rgba(0,0,0,0.42)",
-  color: "#eef4ff",
-  fontFamily: "system-ui, sans-serif",
-  overflow: "hidden",
+  ...centeredWindowStyle(420, 840),
 };
 
 const headerStyle: CSSProperties = {
@@ -224,6 +232,16 @@ const primaryButtonStyle: CSSProperties = {
   border: "1px solid rgba(125,212,255,0.42)",
   background: "rgba(88,172,255,0.24)",
   color: "#eef8ff",
+  padding: "0 12px",
+  fontWeight: 700,
+  cursor: "pointer",
+};
+
+const dangerButtonStyle: CSSProperties = {
+  height: 38,
+  border: "1px solid rgba(255,120,120,0.42)",
+  background: "rgba(255,76,76,0.14)",
+  color: "#ffd0d0",
   padding: "0 12px",
   fontWeight: 700,
   cursor: "pointer",

@@ -4,6 +4,8 @@ import type { AppContext } from "../services/app-context.js";
 import { generateNpcReply } from "../simulation/npc-chat.js";
 import * as authStore from "../store/auth-store.js";
 import { onlinePlayers as onlinePlayersRegistry } from "../services/online-players.js";
+import { findWorldById } from "../utils/world-directories.js";
+import { resolveScopedCharacterRuntime } from "../utils/scoped-character-runtime.js";
 
 interface ClientInfo {
   ws: WebSocket;
@@ -12,11 +14,6 @@ interface ClientInfo {
   worldId: string;
   timelineId: string;
   mapId: string;
-}
-
-/** 房间邀请码：未配置则不校验（任何人可进）。 */
-function getInviteCode(): string {
-  return (process.env.ROOM_INVITE_CODE ?? "").trim();
 }
 
 /** 校验昵称：去空白、限长，空则回退默认。 */
@@ -92,18 +89,76 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
   }
 
   // ===== 模拟事件广播 =====
-  ctx.eventBus.on("tick_events", ({ gameTime, events }) => {
-    broadcast({ type: "simulation_events", data: { gameTime, events } });
+  ctx.eventBus.on("tick_events", ({ gameTime, worldTime, events, scope, sourceUserCharacterId }) => {
+    const data = { gameTime, worldTime, events, scope, sourceUserCharacterId };
+    if (scope) {
+      broadcastToPresence(scope, { type: "simulation_events", data });
+    } else {
+      broadcast({ type: "simulation_events", data });
+    }
     const highlights = events.filter(
       (e: any) => e.dramScore !== undefined && e.dramScore >= 6,
     );
     for (const h of highlights) {
-      broadcast({ type: "highlight_detected", data: h });
+      if (scope) {
+        broadcastToPresence(scope, { type: "highlight_detected", data: h });
+      } else {
+        broadcast({ type: "highlight_detected", data: h });
+      }
     }
   });
 
   ctx.eventBus.on("simulation_status", (payload) => {
+    if ((payload as any)?.scope) {
+      broadcastToPresence((payload as any).scope, { type: "simulation_status", data: payload });
+      return;
+    }
     broadcast({ type: "simulation_status", data: payload });
+  });
+
+  ctx.eventBus.on("map_item_placed", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "map_item_placed", data: payload });
+  });
+
+  ctx.eventBus.on("map_item_picked_up", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "map_item_picked_up", data: payload });
+  });
+
+  ctx.eventBus.on("item_transfer_requested", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "item_transfer_requested", data: payload });
+  });
+
+  ctx.eventBus.on("item_transfer_completed", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "item_transfer_completed", data: payload });
+  });
+
+  ctx.eventBus.on("item_transfer_cancelled", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "item_transfer_cancelled", data: payload });
+  });
+
+  ctx.eventBus.on("item_used", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "item_used", data: payload });
+  });
+
+  ctx.eventBus.on("item_dropped", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "item_dropped", data: payload });
+  });
+
+  ctx.eventBus.on("actor_interaction_started", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "actor_interaction_started", data: payload });
+  });
+
+  ctx.eventBus.on("actor_interaction_updated", (payload: any) => {
+    if (!payload?.scope) return;
+    broadcastToPresence(payload.scope, { type: "actor_interaction_updated", data: payload });
   });
 
   ctx.eventBus.on("user_character_presence_changed", (payload: any) => {
@@ -112,11 +167,19 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
     const newPresence = payload?.newPresence;
     const player = payload?.player;
     const wasOnline = payload?.wasOnline === true;
-    if (!playerId || !oldPresence || !newPresence || !wasOnline) return;
+    if (!playerId || !oldPresence) return;
+
+    if (!newPresence) {
+      if (!wasOnline) return;
+      ctx.mapRuntimeRegistry.markUserOffline(presenceScope(oldPresence), playerId);
+      onlinePlayersRegistry.remove(playerId);
+      broadcastToPresence(oldPresence, { type: "user_character_left", data: { playerId } });
+      return;
+    }
 
     if (!samePresence(oldPresence, newPresence)) {
       ctx.mapRuntimeRegistry.markUserOffline(presenceScope(oldPresence), playerId);
-      broadcastToPresence(oldPresence, { type: "player_left", data: { playerId } });
+      broadcastToPresence(oldPresence, { type: "user_character_left", data: { playerId } });
     }
 
     for (const client of clients.values()) {
@@ -132,17 +195,16 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
     });
 
     ctx.mapRuntimeRegistry.markUserOnline(presenceScope(newPresence), playerId);
-    if (!samePresence(oldPresence, newPresence) && player) {
-      broadcastToPresence(newPresence, { type: "player_joined", data: withPresence(player) });
+    if (player) {
+      broadcastToPresence(newPresence, { type: "user_character_joined", data: withPresence(player) });
     }
   });
 
   // ===== 玩家连接处理 =====
   wss.on("connection", (ws, req) => {
-    // 解析握手参数：?name=昵称&code=邀请码&uid=用户ID&pid=已有用户角色ID
+    // 解析握手参数：?name=昵称&uid=用户ID&pid=已有用户角色ID
     const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
     const requestedName = sanitizeName(query.get("name"));
-    const providedCode = (query.get("code") ?? "").trim();
     const tokenUser = authStore.getUserByToken((query.get("token") ?? "").trim());
     if (!tokenUser) {
       sendTo(ws, { type: "join_rejected", data: { reason: "auth_required" } });
@@ -151,14 +213,6 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
     }
     const requestedUserId = tokenUser.id;
     const requestedPid = (query.get("pid") ?? "").trim();
-
-    // 邀请码校验：配置了才校验，不匹配直接关闭连接
-    const inviteCode = getInviteCode();
-    if (inviteCode && providedCode !== inviteCode) {
-      sendTo(ws, { type: "join_rejected", data: { reason: "invalid_code" } });
-      ws.close(4001, "invalid invite code");
-      return;
-    }
 
     // 身份复用：携带了有效 pid 且该玩家存在 → 复用同一化身（断线重连/刷新）
     let player = requestedPid ? ctx.playerManager.getPlayer(requestedPid, requestedUserId) : null;
@@ -196,7 +250,7 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
       ctx.playerManager.setOnline(playerId, false);
       ctx.playerManager.deactivateLLMTakeover(playerId);
       onlinePlayersRegistry.remove(playerId);
-      broadcastToPresence(lastPresence, { type: "player_left", data: { playerId } });
+      broadcastToPresence(lastPresence, { type: "user_character_left", data: { playerId } });
     };
 
     // 清除该玩家的接管计时器
@@ -238,19 +292,21 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
           // Ignore close races.
         }
       },
+      send: (data: unknown) => sendTo(ws, data),
     });
     ctx.mapRuntimeRegistry.markUserOnline(presenceScope(presence), playerId);
+    const connectedPlayer = ctx.playerManager.getPlayer(playerId, requestedUserId) ?? player;
 
     // 发送连接确认（含用户角色 ID 和 presence）
     const gameTime = ctx.worldManager.getCurrentTime();
     sendTo(ws, {
       type: "connected",
-      data: { gameTime, userId: requestedUserId, playerId, player: withPresence(player), presence },
+      data: { gameTime, userId: requestedUserId, playerId, player: withPresence(connectedPlayer), presence },
     });
 
     broadcastToPresence(
       presence,
-      { type: "player_joined", data: withPresence(player) },
+      { type: "user_character_joined", data: withPresence(connectedPlayer) },
       ws,
     );
 
@@ -259,7 +315,7 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
       (p) => p.id !== playerId && samePresence(getPlayerPresence(p.id), presence),
     ).map((p) => withPresence(p));
     sendTo(ws, {
-      type: "players_online",
+      type: "user_characters_online",
       data: onlinePlayers,
     });
 
@@ -273,7 +329,7 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
       }
 
       switch (msg.type) {
-        case "player_disconnect": {
+        case "user_character_disconnect": {
           closedByClient = true;
           markDisconnected();
           try {
@@ -284,7 +340,7 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
           break;
         }
 
-        case "player_move": {
+        case "user_character_move": {
           const { x, y, location, mainAreaPointId } = msg.data ?? {};
           if (typeof x === "number" && typeof y === "number") {
             ctx.playerManager.updatePosition(
@@ -299,7 +355,7 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
             broadcastToPresence(
               movedPresence,
               {
-                type: "player_moved",
+                type: "user_character_moved",
                 data: {
                   playerId,
                   x,
@@ -318,7 +374,7 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
           break;
         }
 
-        case "player_mode": {
+        case "user_character_mode": {
           const { mode } = msg.data ?? {};
           if (mode === "avatar" || mode === "god") {
             ctx.playerManager.setMode(playerId, mode);
@@ -326,20 +382,20 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
             const modePresence = getPlayerPresence(playerId);
             broadcastToPresence(
               modePresence,
-              { type: "player_mode_changed", data: { playerId, mode } },
+              { type: "user_character_mode_changed", data: { playerId, mode } },
               ws,
             );
-            sendTo(ws, { type: "player_mode_changed", data: { playerId, mode } });
+            sendTo(ws, { type: "user_character_mode_changed", data: { playerId, mode } });
             if (mode === "avatar" && updatedPlayer) {
-              broadcastToPresence(modePresence, { type: "player_joined", data: withPresence(updatedPlayer) }, ws);
+              broadcastToPresence(modePresence, { type: "user_character_joined", data: withPresence(updatedPlayer) }, ws);
             } else {
-              broadcastToPresence(modePresence, { type: "player_left", data: { playerId } }, ws);
+              broadcastToPresence(modePresence, { type: "user_character_left", data: { playerId } }, ws);
             }
           }
           break;
         }
 
-        case "player_chat": {
+        case "user_character_chat": {
           const { message } = msg.data ?? {};
           if (typeof message === "string" && message.trim()) {
             const player = ctx.playerManager.getPlayer(playerId);
@@ -347,7 +403,7 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
             broadcastToPresence(
               chatPresence,
               {
-                type: "player_chat",
+                type: "user_character_chat",
                 data: {
                   playerId,
                   playerName: player?.name ?? "旅行者",
@@ -374,12 +430,14 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
           const askerName = asker?.name ?? "旅行者";
           const question = message.trim();
           const chatPresence = getPlayerPresence(playerId);
+          const chatWorld = findWorldById(chatPresence.worldId);
+          const chatWorldDir = chatWorld?.dir;
 
           // 1) 提问本身作为公屏消息广播给其他人（发送方本地已回显）
           broadcastToPresence(
             chatPresence,
             {
-              type: "player_chat",
+              type: "user_character_chat",
               data: { playerId, playerName: askerName, message: question },
             },
             ws,
@@ -388,7 +446,7 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
           // 2) 先广播「NPC 正在输入」提示（含发送方）
           let charName = characterId;
           try {
-            charName = ctx.characterManager.getProfile(characterId).name;
+            charName = resolveScopedCharacterRuntime(ctx, characterId, chatWorldDir).profile.name;
           } catch {
             // 角色不存在，下面统一处理
           }
@@ -398,7 +456,10 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
           });
 
           // 3) 异步生成回复并广播给所有人
-          generateNpcReply(ctx, characterId, askerName, question, Date.now())
+          generateNpcReply(ctx, characterId, askerName, question, Date.now(), {
+            worldDir: chatWorldDir,
+            threadScopeId: `${chatPresence.worldId}:${chatPresence.timelineId}:${chatPresence.currentMapId}:${characterId}`,
+          })
             .then((res) => {
               broadcastToPresence(chatPresence, {
                 type: "npc_chat",

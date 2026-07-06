@@ -2,10 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as accountAssets from "../store/account-asset-store.js";
+import { getDataDir } from "./data-dir.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-export const GENERATED_WORLDS_DIR = path.resolve(__dirname, "../../../output/worlds");
+export const GENERATED_WORLDS_DIR = getDataDir("worlds");
 export const LIBRARY_WORLDS_DIR = path.resolve(__dirname, "../../../library/worlds");
 
 export type WorldSource = "user" | "library";
@@ -42,7 +43,7 @@ export function resolveInitialWorldDir(): string | undefined {
 
 export function listGeneratedWorlds(userId?: string): GeneratedWorldSummary[] {
   return scanWorldsDir(GENERATED_WORLDS_DIR, "user")
-    .filter((world) => canUserAccessWorld(world, userId));
+    .filter((world) => canUserListWorld(world, userId));
 }
 
 export function listLibraryWorlds(_userId?: string): GeneratedWorldSummary[] {
@@ -63,12 +64,43 @@ export function canUserAccessWorld(world: GeneratedWorldSummary, userId?: string
   if (world.source === "library") return true;
   if (!userId) return false;
   if (world.ownerUserId === userId || accountAssets.userOwnsWorld(userId, world.id)) return true;
+  if (accountAssets.userIsWorldMember(userId, world.id)) return true;
   return world.visibility === "public" || world.visibility === "unlisted";
+}
+
+export function canUserListWorld(world: GeneratedWorldSummary, userId?: string): boolean {
+  if (world.source === "library") return true;
+  if (!userId) return false;
+  if (world.ownerUserId === userId || accountAssets.userOwnsWorld(userId, world.id)) return true;
+  if (accountAssets.userIsWorldMember(userId, world.id)) return true;
+  return world.visibility === "public";
+}
+
+export function getUserWorldRole(world: GeneratedWorldSummary, userId?: string): "owner" | accountAssets.WorldMemberRole | "public" | null {
+  if (world.source === "library") return "builder";
+  if (!userId) return null;
+  if (world.ownerUserId === userId) return "owner";
+  const memberRole = accountAssets.getWorldMemberRole(world.id, userId);
+  if (memberRole) return memberRole;
+  if (world.visibility === "public" || world.visibility === "unlisted") return "public";
+  return null;
 }
 
 export function canUserManageWorld(world: GeneratedWorldSummary, userId?: string): boolean {
   if (world.source === "library") return false;
-  return Boolean(userId && (world.ownerUserId === userId || accountAssets.userOwnsWorld(userId, world.id)));
+  const role = getUserWorldRole(world, userId);
+  return role === "owner" || role === "admin";
+}
+
+export function canUserOwnWorld(world: GeneratedWorldSummary, userId?: string): boolean {
+  if (world.source === "library") return false;
+  return Boolean(userId && world.ownerUserId === userId);
+}
+
+export function canUserBuildWorld(world: GeneratedWorldSummary, userId?: string): boolean {
+  if (world.source === "library") return Boolean(userId);
+  const role = getUserWorldRole(world, userId);
+  return role === "owner" || role === "admin" || role === "builder";
 }
 
 export function readWorldAccessMetadata(worldDir: string, source: WorldSource = "user"): WorldAccessMetadata {
@@ -104,15 +136,25 @@ export function writeWorldAccessMetadata(
   input: { ownerUserId: string; visibility?: WorldVisibility },
 ): WorldAccessMetadata {
   const existing = readWorldAccessMetadata(worldDir);
+  let existingRaw: Record<string, unknown> = {};
+  const metaPath = path.join(worldDir, WORLD_META_FILENAME);
+  if (fs.existsSync(metaPath)) {
+    try {
+      existingRaw = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as Record<string, unknown>;
+    } catch {
+      existingRaw = {};
+    }
+  }
   const timestamp = new Date().toISOString();
-  const metadata: WorldAccessMetadata = {
+  const metadata: WorldAccessMetadata & Record<string, unknown> = {
+    ...existingRaw,
     ownerUserId: input.ownerUserId,
     visibility: input.visibility ?? existing.visibility ?? "private",
     createdAt: existing.createdAt || timestamp,
     updatedAt: timestamp,
   };
   fs.writeFileSync(
-    path.join(worldDir, WORLD_META_FILENAME),
+    metaPath,
     `${JSON.stringify(metadata, null, 2)}\n`,
     "utf-8",
   );

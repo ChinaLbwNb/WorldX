@@ -40,7 +40,8 @@ async function main() {
 
   const startedAt = Date.now();
   const worldConfig = readWorldConfig(worldDir);
-  const sourceMap = (worldConfig.worldMaps || []).find((map) => map.id === sourceMapId);
+  const mapNodes = Array.isArray(worldConfig.mapNodes) ? worldConfig.mapNodes : worldConfig.worldMaps || [];
+  const sourceMap = mapNodes.find((map) => map.id === sourceMapId);
   const sourceName = sourceMap?.name || worldConfig.worldName || "原始地图";
   const worldTheme = [
     worldConfig.worldName,

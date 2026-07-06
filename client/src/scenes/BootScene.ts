@@ -1,10 +1,12 @@
 import Phaser from "phaser";
 import { SPRITE_FRAME_WIDTH, SPRITE_FRAME_HEIGHT } from "../config/game-config";
+import { withAssetAuth } from "../utils/asset-url";
 
 const FALLBACK_MAP_ASSET_PREFIX = "/assets/maps/map_origin";
 const FALLBACK_CHARACTER_ASSET_PREFIX = "/assets/characters";
 const LS_USER_ID = "worldx_user_id";
 const LS_AUTH_TOKEN = "worldx_auth_token";
+const LS_USER_CHARACTER_ID = "worldx_user_character_id";
 
 interface BackgroundTileInfo {
   key: string;
@@ -67,7 +69,7 @@ export class BootScene extends Phaser.Scene {
     await this.resolveRuntimeState();
     this.registry.set("mapAssetPrefix", this.mapAssetPrefix);
     this.registry.set("characterAssetPrefix", this.characterAssetPrefix);
-    this.registry.set("mapBackgroundUrl", `${this.mapAssetPrefix}/06-background.png`);
+    this.registry.set("mapBackgroundUrl", withAssetAuth(`${this.mapAssetPrefix}/06-background.png`));
     this.clearPreviousMapAssets();
 
     this.load.off("progress");
@@ -84,20 +86,20 @@ export class BootScene extends Phaser.Scene {
       console.warn(`[BootScene] Failed to load asset: ${file.type} ${file.key}`);
     });
 
-    this.load.json("world-map", `${this.mapAssetPrefix}/06-final.tmj`);
+    this.load.json("world-map", withAssetAuth(`${this.mapAssetPrefix}/06-final.tmj`));
     const manifest = await this.fetchBackgroundTilesManifest();
     if (manifest?.tiles?.length) {
       this.cache.json.add("world-background-tiles", manifest);
       console.log(`[BootScene] Queueing ${manifest.tiles.length} background tile(s)`);
       for (const tile of manifest.tiles) {
-        this.load.image(tile.key, `${this.mapAssetPrefix}/${tile.path}`);
+        this.load.image(tile.key, withAssetAuth(`${this.mapAssetPrefix}/${tile.path}`));
       }
     } else {
       this.cache.json.remove("world-background-tiles");
     }
 
     for (const charId of this.characterIds) {
-      this.load.spritesheet(charId, `${this.characterAssetPrefix}/${encodeURIComponent(charId)}/spritesheet.png`, {
+      this.load.spritesheet(charId, withAssetAuth(`${this.characterAssetPrefix}/${encodeURIComponent(charId)}/spritesheet.png`), {
         frameWidth: SPRITE_FRAME_WIDTH,
         frameHeight: SPRITE_FRAME_HEIGHT,
       });
@@ -118,8 +120,10 @@ export class BootScene extends Phaser.Scene {
   }
 
   private async resolveRuntimeState() {
+    const selectedCharacterId = this.getSelectedUserCharacterId();
     try {
-      const res = await fetch("/api/characters", {
+      const query = selectedCharacterId ? `?userCharacterId=${encodeURIComponent(selectedCharacterId)}` : "";
+      const res = await fetch(`/api/characters${query}`, {
         cache: "no-store",
         headers: this.getAuthHeaders(),
       });
@@ -132,7 +136,8 @@ export class BootScene extends Phaser.Scene {
       this.characterIds = [];
     }
     try {
-      const res = await fetch("/api/world/maps", {
+      const query = selectedCharacterId ? `?userCharacterId=${encodeURIComponent(selectedCharacterId)}` : "";
+      const res = await fetch(`/api/world/maps${query}`, {
         cache: "no-store",
         headers: this.getAuthHeaders(),
       });
@@ -156,7 +161,10 @@ export class BootScene extends Phaser.Scene {
 
   private async fetchBackgroundTilesManifest(): Promise<BackgroundTilesManifest | null> {
     try {
-      const res = await fetch(`${this.mapAssetPrefix}/background-tiles/manifest.json`, { cache: "no-store" });
+      const res = await fetch(withAssetAuth(`${this.mapAssetPrefix}/background-tiles/manifest.json`), {
+        cache: "no-store",
+        headers: this.getAuthHeaders(),
+      });
       if (!res.ok) return null;
       const manifest = await res.json() as BackgroundTilesManifest;
       return manifest?.tiles?.length ? manifest : null;
@@ -177,6 +185,14 @@ export class BootScene extends Phaser.Scene {
       // BootScene can still load public assets in legacy/dev contexts.
     }
     return headers;
+  }
+
+  private getSelectedUserCharacterId(): string {
+    try {
+      return localStorage.getItem(LS_USER_CHARACTER_ID) || "";
+    } catch {
+      return "";
+    }
   }
 
   private clearPreviousMapAssets() {

@@ -455,7 +455,24 @@
     }
   },
   "activeMapId": "map_origin",
-  "worldMaps": [
+  "mapLinks": [
+    {
+      "fromMapId": "map_origin",
+      "toMapId": "map_1_0_mr4wd4od",
+      "label": "地图节点"
+    }
+  ],
+  "mapSpawnPoints": [
+    {
+      "mapId": "map_1_0_mr4wd4od",
+      "id": "map_1_0_mr4wd4od_spawn",
+      "name": "入口空地",
+      "x": 514,
+      "y": 514,
+      "default": true
+    }
+  ],
+  "mapNodes": [
     {
       "id": "map_origin",
       "name": "Post-Victory Pixel Hamlet",
@@ -466,8 +483,22 @@
       "previewImage": "background-preview.png",
       "defaultSpawnPointId": "map_origin_spawn",
       "createdAt": "2026-06-27T17:13:25.022Z"
+    },
+    {
+      "id": "map_1_0_mr4wd4od",
+      "name": "海边港口",
+      "gridX": 1,
+      "gridY": 0,
+      "status": "available",
+      "mapDir": "map_1_0_mr4wd4od",
+      "previewImage": "background-preview.png",
+      "defaultSpawnPointId": "map_1_0_mr4wd4od_spawn",
+      "createdAt": "2026-07-03T12:15:58.189Z",
+      "source": {
+        "fromMapId": "map_origin",
+        "prompt": "海边港口",
+        "model": "MaaS_Ge_2.5_flash_image_20251002"
+      }
     }
-  ],
-  "mapLinks": [],
-  "mapSpawnPoints": []
+  ]
 }

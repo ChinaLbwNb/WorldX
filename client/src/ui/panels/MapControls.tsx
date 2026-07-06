@@ -2,6 +2,9 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import Phaser from "phaser";
 import { apiClient } from "../services/api-client";
+import { networkManager } from "../../systems/NetworkManager";
+import { withAssetAuth } from "../../utils/asset-url";
+import { darkGlassSubtlePanelStyle } from "../components/panel-styles";
 
 interface CameraState {
   x: number;
@@ -63,12 +66,14 @@ export function MapControls({
 
   useEffect(() => {
     let cancelled = false;
-    const image = new Image();
+    let image = new Image();
     const loadPreview = async () => {
+      const nextImage = new Image();
+      image = nextImage;
       let activeMapId = "map_origin";
       let currentWorldId = "";
       try {
-        const state = await apiClient.getWorldMaps();
+        const state = await apiClient.getMapNodes(networkManager.getSelectedUserCharacterId() || undefined);
         activeMapId = state.activeMapId || activeMapId;
         currentWorldId = state.currentWorldId || "";
       } catch {
@@ -77,21 +82,28 @@ export function MapControls({
       const mapAssetPrefix = currentWorldId
         ? `/assets/worlds/${encodeURIComponent(currentWorldId)}/maps/${encodeURIComponent(activeMapId)}`
         : `/assets/maps/${encodeURIComponent(activeMapId)}`;
-      image.src = `${mapAssetPrefix}/06-background.png`;
+      nextImage.onload = () => {
+        if (cancelled) return;
+        miniMapImageRef.current = nextImage;
+      };
+      nextImage.onerror = () => {
+        if (cancelled) return;
+        miniMapImageRef.current = null;
+      };
+      nextImage.src = withAssetAuth(`${mapAssetPrefix}/06-background.png`);
     };
-    image.onload = () => {
-      if (cancelled) return;
-      miniMapImageRef.current = image;
-    };
-    image.onerror = () => {
-      if (cancelled) return;
-      miniMapImageRef.current = null;
-    };
+    const refreshPreview = () => void loadPreview();
     loadPreview();
+    eventBus.on("map_nodes_changed", refreshPreview);
+    eventBus.on("local_user_character_changed", refreshPreview);
     return () => {
       cancelled = true;
+      eventBus.off("map_nodes_changed", refreshPreview);
+      eventBus.off("local_user_character_changed", refreshPreview);
+      image.onload = null;
+      image.onerror = null;
     };
-  }, []);
+  }, [eventBus]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -169,22 +181,7 @@ export function MapControls({
   return (
     <>
       {/* Bottom-left: Minimap + Zoom */}
-      <div style={{ position: "fixed", bottom: 12, left: 12, zIndex: 90, pointerEvents: "auto" }}>
-        {/* Zoom bar */}
-          <div style={{ ...panelStyle, display: "flex", alignItems: "center", gap: 3, marginBottom: 6, padding: "3px 5px" }}>
-          <ZoomBtn onClick={zoomOut} title={t("mapControls.zoomOut")}>−</ZoomBtn>
-          <div
-            onClick={zoomReset}
-            title={t("mapControls.zoomReset")}
-            style={{ width: 44, textAlign: "center", fontSize: 11, color: "#ccc", cursor: "pointer", userSelect: "none" }}
-          >
-            {Math.round(zoom * 100)}%
-          </div>
-          <ZoomBtn onClick={zoomIn} title={t("mapControls.zoomIn")}>+</ZoomBtn>
-          <Divider />
-          <ZoomBtn onClick={zoomFit} title={t("mapControls.zoomFit")}>⊡</ZoomBtn>
-        </div>
-
+      <div style={{ position: "fixed", top: 132, left: 14, zIndex: 90, pointerEvents: "auto" }}>
         {/* Minimap */}
         <div style={{ ...panelStyle, padding: 3, cursor: "crosshair", position: "relative" }}>
           <canvas
@@ -199,6 +196,21 @@ export function MapControls({
             onMouseMove={handleMinimapDrag}
           />
         </div>
+
+        {/* Zoom bar */}
+        <div style={{ ...panelStyle, display: "flex", alignItems: "center", gap: 3, marginTop: 6, padding: "3px 5px" }}>
+          <ZoomBtn onClick={zoomOut} title={t("mapControls.zoomOut")}>−</ZoomBtn>
+          <div
+            onClick={zoomReset}
+            title={t("mapControls.zoomReset")}
+            style={{ width: 44, textAlign: "center", fontSize: 11, color: "#ccc", cursor: "pointer", userSelect: "none" }}
+          >
+            {Math.round(zoom * 100)}%
+          </div>
+          <ZoomBtn onClick={zoomIn} title={t("mapControls.zoomIn")}>+</ZoomBtn>
+          <Divider />
+          <ZoomBtn onClick={zoomFit} title={t("mapControls.zoomFit")}>⊡</ZoomBtn>
+        </div>
       </div>
 
       {/* Controls hint - bottom center, fades out */}
@@ -209,8 +221,7 @@ export function MapControls({
             bottom: 16,
             left: "50%",
             transform: "translateX(-50%)",
-            background: "rgba(6, 9, 20, 0.82)",
-            backdropFilter: "blur(10px)",
+            ...darkGlassSubtlePanelStyle,
             borderRadius: 14,
             padding: "10px 16px",
             color: "#d6d9e6",
@@ -218,8 +229,6 @@ export function MapControls({
             zIndex: 80,
             pointerEvents: "none",
             animation: "hintFade 9s ease forwards",
-            border: "1px solid rgba(255,255,255,0.08)",
-            boxShadow: "0 12px 28px rgba(0,0,0,0.28)",
             minWidth: 320,
           }}
         >
@@ -265,8 +274,6 @@ function Divider() {
 }
 
 const panelStyle: React.CSSProperties = {
-  background: "rgba(16,16,32,0.92)",
-  backdropFilter: "blur(8px)",
+  ...darkGlassSubtlePanelStyle,
   borderRadius: 8,
-  border: "1px solid rgba(255,255,255,0.1)",
 };

@@ -1,11 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { getDataDir } from "./data-dir.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, "../../..");
-const ACCOUNT_ASSETS_ROOT = path.resolve(PROJECT_ROOT, "output/account-assets");
+const ACCOUNT_ASSETS_ROOT = getDataDir("account-assets");
 
 export function getAccountAssetsRoot(): string {
   fs.mkdirSync(ACCOUNT_ASSETS_ROOT, { recursive: true });

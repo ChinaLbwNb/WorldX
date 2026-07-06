@@ -320,19 +320,21 @@ export function initDatabase(dbPath?: string): Database.Database {
   const resolvedPath =
     dbPath ?? process.env.DB_PATH ?? path.resolve("data/mist-town.db");
 
-  const dir = path.dirname(resolvedPath);
+  currentDbPath = resolvedPath;
+  db = openDatabaseAt(resolvedPath);
+  return db;
+}
+
+export function openDatabaseAt(dbPath: string): Database.Database {
+  const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-
-  currentDbPath = resolvedPath;
-  db = new Database(resolvedPath);
-  db.pragma("journal_mode = WAL");
-  db.exec(SCHEMA_SQL);
-
-  runMigrations(db);
-
-  return db;
+  const database = new Database(dbPath);
+  database.pragma("journal_mode = WAL");
+  database.exec(SCHEMA_SQL);
+  runMigrations(database);
+  return database;
 }
 
 function runMigrations(database: Database.Database): void {

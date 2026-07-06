@@ -11,6 +11,9 @@ import { SandboxChatPanel } from "./SandboxChatPanel";
 import { TimelineManagerModal } from "./TimelineManagerModal";
 import { OnlinePlayersPanel } from "./OnlinePlayersPanel";
 import { LanguageToggle } from "../components/LanguageToggle";
+import { GameIcon } from "../components/GameIcon";
+import type { GameIconName } from "../components/GameIcon";
+import { darkGlassPanelStyle, darkGlassSubtlePanelStyle } from "../components/panel-styles";
 import { translatePeriod } from "../utils/time-i18n";
 import { sortLibraryWorldsForLocale } from "../utils/library-world-sort";
 import { EventBus } from "../../EventBus";
@@ -41,13 +44,23 @@ export function TopBar({
   onHeightChange,
   resources,
   onToggleBuildPanel,
+  onToggleMapPanel,
   buildPanelOpen,
+  buildPanelMode,
   onToggleInventoryPanel,
   inventoryPanelOpen,
+  onToggleTradePanel,
+  tradePanelOpen,
   onToggleUserCharactersPanel,
   userCharactersPanelOpen,
   onToggleUserAccountPanel,
   userAccountPanelOpen,
+  onToggleNpcPanel,
+  npcPanelOpen,
+  onToggleTimelinePanel,
+  timelinePanelOpen,
+  onToggleTasksPanel,
+  tasksPanelOpen,
 }: {
   worldInfo?: WorldInfo | null;
   gameTime: WorldTimeInfo;
@@ -71,13 +84,23 @@ export function TopBar({
   onHeightChange?: (height: number) => void;
   resources?: number | null;
   onToggleBuildPanel?: () => void;
+  onToggleMapPanel?: () => void;
   buildPanelOpen?: boolean;
+  buildPanelMode?: "character" | "map";
   onToggleInventoryPanel?: () => void;
   inventoryPanelOpen?: boolean;
+  onToggleTradePanel?: () => void;
+  tradePanelOpen?: boolean;
   onToggleUserCharactersPanel?: () => void;
   userCharactersPanelOpen?: boolean;
   onToggleUserAccountPanel?: () => void;
   userAccountPanelOpen?: boolean;
+  onToggleNpcPanel?: () => void;
+  npcPanelOpen?: boolean;
+  onToggleTimelinePanel?: () => void;
+  timelinePanelOpen?: boolean;
+  onToggleTasksPanel?: () => void;
+  tasksPanelOpen?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -91,6 +114,8 @@ export function TopBar({
   const [isChangingTickGranularity, setIsChangingTickGranularity] = useState(false);
   const [managerModalOpen, setManagerModalOpen] = useState(false);
   const [onlinePanelOpen, setOnlinePanelOpen] = useState(false);
+  const [hudMenuOpen, setHudMenuOpen] = useState(false);
+  const [worldTrayOpen, setWorldTrayOpen] = useState(false);
   const [timelines, setTimelines] = useState<TimelineMeta[]>([]);
   const [selectedTimelineId, setSelectedTimelineId] = useState("");
   const [isSwitchingTimeline, setIsSwitchingTimeline] = useState(false);
@@ -118,31 +143,46 @@ export function TopBar({
   useEffect(() => {
     let cancelled = false;
     const lang = i18n.resolvedLanguage || i18n.language || "en";
-    apiClient.getGeneratedWorlds()
-      .then((response) => {
-        if (cancelled) return;
-        setAvailableWorlds(response.worlds);
-        setLibraryWorlds(response.libraryWorlds ?? []);
-        const sortedLib = sortLibraryWorldsForLocale(response.libraryWorlds ?? [], lang);
-        const merged = [...response.worlds, ...sortedLib];
-        const defaultWorldId =
-          response.currentWorldId ||
-          merged.find((world) => world.isCurrent)?.id ||
-          merged[0]?.id ||
-          "";
-        if (defaultWorldId) setSelectedWorldId(defaultWorldId);
-      })
-      .catch(() => {});
+    const loadWorldChoices = () => {
+      const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+      apiClient.getGeneratedWorlds(userCharacterId)
+        .then((response) => {
+          if (cancelled) return;
+          setAvailableWorlds(response.worlds);
+          setLibraryWorlds(response.libraryWorlds ?? []);
+          const sortedLib = sortLibraryWorldsForLocale(response.libraryWorlds ?? [], lang);
+          const merged = [...response.worlds, ...sortedLib];
+          const defaultWorldId =
+            response.currentWorldId ||
+            merged.find((world) => world.isCurrent)?.id ||
+            merged[0]?.id ||
+            "";
+          if (defaultWorldId) setSelectedWorldId(defaultWorldId);
+        })
+        .catch(() => {});
 
-    apiClient.getTimelines()
-      .then((response) => {
-        if (cancelled) return;
-        setTimelines(response.timelines);
-        if (response.currentTimelineId) setSelectedTimelineId(response.currentTimelineId);
-      })
-      .catch(() => {});
+      apiClient.getTimelines(userCharacterId)
+        .then((response) => {
+          if (cancelled) return;
+          setTimelines(response.timelines);
+          if (response.currentTimelineId) setSelectedTimelineId(response.currentTimelineId);
+        })
+        .catch(() => {});
+    };
 
-    return () => { cancelled = true; };
+    loadWorldChoices();
+    const onContextChanged = () => {
+      loadWorldChoices();
+    };
+    EventBus.instance.on("local_user_character_changed", onContextChanged);
+    EventBus.instance.on("local_user_character_id_changed", onContextChanged);
+    EventBus.instance.on("network_connected", onContextChanged);
+    return () => {
+      cancelled = true;
+      EventBus.instance.off("local_user_character_changed", onContextChanged);
+      EventBus.instance.off("local_user_character_id_changed", onContextChanged);
+      EventBus.instance.off("network_connected", onContextChanged);
+    };
   }, [i18n.resolvedLanguage, i18n.language]);
 
   useEffect(() => {
@@ -151,22 +191,12 @@ export function TopBar({
   }, [worldInfo?.currentWorldId, worldInfo?.currentTimelineId]);
 
   useEffect(() => {
-    if (!onHeightChange || !barRef.current) return;
-    const node = barRef.current;
-    const notifyHeight = () => onHeightChange(Math.ceil(node.getBoundingClientRect().height));
-    notifyHeight();
-    const observer = new ResizeObserver(notifyHeight);
-    observer.observe(node);
-    window.addEventListener("resize", notifyHeight);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", notifyHeight);
-    };
+    onHeightChange?.(0);
   }, [onHeightChange]);
 
   const handleSwitchToReplay = async () => {
     try {
-      const fresh = await apiClient.getTimelines();
+      const fresh = await apiClient.getTimelines(networkManager.getSelectedUserCharacterId() || undefined);
       const currentTl = fresh.timelines.find((tl) => tl.id === selectedTimelineId);
       if (!currentTl || currentTl.tickCount <= 0) {
         window.alert(t("topbar.noReplayDataAlert"));
@@ -246,8 +276,11 @@ export function TopBar({
     setSelectedTimelineId(nextTimelineId);
     setIsSwitchingTimeline(true);
     try {
-      networkManager.clearSelectedUserCharacter();
-      await apiClient.loadTimeline(nextTimelineId);
+      const selectedUserCharacterId = networkManager.getSelectedUserCharacterId();
+      const result = await apiClient.loadTimeline(nextTimelineId, selectedUserCharacterId || undefined);
+      if (result.character?.id) {
+        networkManager.setSelectedUserCharacter(result.character.id, result.character.name);
+      }
       const params = new URLSearchParams(window.location.search);
       if (inReplayMode) params.set("mode", "replay");
       window.location.search = params.toString();
@@ -286,15 +319,11 @@ export function TopBar({
     [libraryWorlds, i18n.resolvedLanguage, i18n.language],
   );
   const allWorlds = [...availableWorlds, ...sortedLibraryWorlds];
+  const isPublicWorld = sortedLibraryWorlds.some((world) => world.id === selectedWorldId);
 
   const handleWorldChange = async (event: ChangeEvent<HTMLSelectElement>) => {
     const nextWorldId = event.target.value;
     if (!nextWorldId || nextWorldId === selectedWorldId) return;
-    const nextWorld = allWorlds.find((world) => world.id === nextWorldId);
-    const confirmed = window.confirm(
-      t("topbar.confirmSwitchWorld", { name: nextWorld?.worldName ?? nextWorldId }),
-    );
-    if (!confirmed) return;
     const previousWorldId = selectedWorldId;
     setSelectedWorldId(nextWorldId);
     setIsSwitchingWorld(true);
@@ -319,292 +348,258 @@ export function TopBar({
   };
 
   return (
-    <div
-      ref={barRef}
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        background: "linear-gradient(180deg, rgba(10,12,24,0.96), rgba(10,12,24,0.92))",
-        backdropFilter: "blur(10px)",
-        display: "flex",
-        flexDirection: "column",
-        padding: "10px 14px",
-        gap: 10,
-        color: "#e0e0e0",
-        fontSize: 13,
-        zIndex: 100,
-        borderBottom: "1px solid rgba(255,255,255,0.08)",
-        boxShadow: "0 10px 28px rgba(0,0,0,0.24)",
-        pointerEvents: "auto",
-      }}
-    >
-      {/* Row 1: status info + world/timeline selectors + mode toggle + play */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-        {/* Left: world name + status + time */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-          <span style={{ fontWeight: 700, fontSize: 15, whiteSpace: "nowrap" }}>
-            🌍 {worldName}
+    <div ref={barRef} style={hudRootStyle}>
+      <section style={{ ...hudPanelStyle, ...topLeftPanelStyle, zIndex: worldTrayOpen ? 140 : 110 }} aria-label="world hud">
+        <button
+          onClick={() => setWorldTrayOpen((prev) => !prev)}
+          style={worldBadgeButtonStyle}
+          title="展开世界与时间线"
+        >
+          <GameIcon name="world" size={34} title="世界" />
+          <span style={{ minWidth: 0 }}>
+            <span style={worldTitleStyle}>{worldName}</span>
+            <span style={worldMetaStyle}>{timeLabel}</span>
           </span>
           <span style={{
-            width: 8, height: 8, borderRadius: "50%",
+            width: 9,
+            height: 9,
+            borderRadius: "50%",
             background: statusColor,
             animation: (isBusy || isReplaying) ? "pulse 1s infinite" : "pulse 2s infinite",
             flexShrink: 0,
           }} />
-          <span style={{ fontSize: 11, opacity: 0.78, whiteSpace: "nowrap" }}>{statusLabel}</span>
-          <span style={{ opacity: 0.45 }}>|</span>
-          <span style={{ fontSize: 12, color: "#dfe6e9", whiteSpace: "nowrap" }}>{timeLabel}</span>
-        </div>
+        </button>
 
-        {/* Center: resources（当前账号资源货币）*/}
+        {worldTrayOpen && (
+          <div style={worldTrayStyle}>
+            {allWorlds.length > 0 && (
+              <label style={trayFieldStyle}>
+                <span style={trayLabelStyle}>{t("topbar.worldLabel")}</span>
+                <select value={selectedWorldId} onChange={handleWorldChange}
+                  disabled={isBusy} style={{ ...selectStyle, width: "100%" }}>
+                  {availableWorlds.length > 0 && (
+                    <optgroup label={t("topbar.myWorlds")}>
+                      {availableWorlds.map((world) => (
+                        <option key={world.id} value={world.id}>{world.worldName}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {sortedLibraryWorlds.length > 0 && (
+                    <optgroup label={t("topbar.sampleWorlds")}>
+                      {sortedLibraryWorlds.map((world) => (
+                        <option key={world.id} value={world.id}>{world.worldName}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </label>
+            )}
+            {timelines.length > 0 && (
+              <label style={trayFieldStyle}>
+                <span style={trayLabelStyle}>{t("topbar.timelineLabel")}</span>
+                <select value={selectedTimelineId} onChange={handleTimelineChange}
+                  disabled={isBusy} style={{ ...selectStyle, width: "100%" }}>
+                  {timelines.map((tl, idx) => (
+                    <option key={tl.id} value={tl.id}>{formatTimelineLabel(tl, timelines.length - idx)}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={() => setManagerModalOpen(true)} disabled={isBusy}
+                style={chipBtnStyle(managerModalOpen)}
+                title={t("topbar.manageTitle")}>
+                {t("topbar.manage")}
+              </button>
+              {inRunMode && !isPublicWorld && (
+                <button
+                  onClick={onNewTimeline}
+                  disabled={isBusy}
+                  style={{
+                    ...secondaryBtnStyle,
+                    borderRadius: 999,
+                    color: "#a3d8ff",
+                    borderColor: "rgba(116,185,255,0.4)",
+                    background: "rgba(116,185,255,0.12)",
+                    cursor: isBusy ? "wait" : "pointer",
+                    opacity: isBusy ? 0.7 : 1,
+                  }}
+                >
+                  {isResetting ? t("topbar.creatingTimeline") : t("topbar.newTimeline")}
+                </button>
+              )}
+              {inRunMode && (
+                <button
+                  onClick={() => { pauseWorldIfNeeded(); navigate("/create"); }}
+                  disabled={isResetting || isSwitchingWorld}
+                  style={newWorldBtnStyle(isResetting || isSwitchingWorld)}
+                  title={t("topbar.newWorldTitle")}
+                >
+                  <GameIcon name="world" size={20} title={t("topbar.newWorld")} />
+                  {t("topbar.newWorld")}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section style={{ ...hudPanelStyle, ...topCenterPanelStyle, zIndex: 100 }} aria-label="simulation hud">
+        <div style={modeToggleContainerStyle}>
+          <button onClick={handleSwitchToRun} disabled={isBusy} style={modeToggleBtnStyle(inRunMode, "run")}>
+            {t("topbar.run")}
+          </button>
+          <button
+            onClick={handleSwitchToReplay}
+            disabled={isBusy}
+            style={modeToggleBtnStyle(inReplayMode, "replay")}
+            title={t("topbar.switchToReplay")}
+          >
+            {t("topbar.replay")}
+          </button>
+        </div>
+        <button
+          onClick={onToggleAutoPlay}
+          disabled={inRunMode ? autoPlayToggleDisabled : false}
+          style={{
+            ...primaryBtnStyle,
+            background: autoPlayEnabled
+              ? (inReplayMode ? "rgba(225,112,85,0.28)" : "rgba(116,185,255,0.24)")
+              : (inReplayMode ? "rgba(225,112,85,0.14)" : "rgba(116,185,255,0.14)"),
+            borderColor: inReplayMode ? "rgba(225,112,85,0.5)" : "rgba(116,185,255,0.45)",
+            cursor: (inRunMode && autoPlayToggleDisabled) ? "wait" : "pointer",
+            opacity: (inRunMode && autoPlayToggleDisabled) ? 0.6 : 1,
+            minWidth: 72,
+          }}
+        >
+          {autoPlayEnabled
+            ? (inReplayMode ? t("topbar.pauseReplay") : t("topbar.pauseRun"))
+            : (inReplayMode ? t("topbar.playReplay") : t("topbar.playRun"))}
+        </button>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "rgba(238,244,255,0.76)", fontSize: 12, whiteSpace: "nowrap" }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor }} />
+          {statusLabel}
+        </span>
+        {inReplayMode && replayProgress && (
+          <div style={replayProgressStyle}>
+            <span>{replayProgress.current}/{replayProgress.total}</span>
+            <span style={replayTrackStyle}>
+              <span style={{
+                ...replayFillStyle,
+                width: `${replayProgress.total > 0 ? (replayProgress.current / replayProgress.total) * 100 : 0}%`,
+              }} />
+            </span>
+          </div>
+        )}
+      </section>
+
+      <section style={{ ...hudPanelStyle, ...topRightPanelStyle, zIndex: 120 }} aria-label="account hud">
         {resources !== null && resources !== undefined && (
           <ResourceDisplay resources={resources} />
         )}
+        {onToggleUserAccountPanel && (
+          <AccountTextButton
+            label="账号"
+            onClick={onToggleUserAccountPanel}
+            active={userAccountPanelOpen ?? false}
+            disabled={inReplayMode}
+          />
+        )}
+        <LanguageToggle />
+      </section>
 
-        {/* Right: mode toggle + play/pause */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {/* Mode toggle: Run / Replay */}
-          <div style={modeToggleContainerStyle}>
-            <button
-              onClick={handleSwitchToRun}
-              disabled={isBusy}
-              style={modeToggleBtnStyle(inRunMode, "run")}
-            >
-              {t("topbar.run")}
-            </button>
-            <button
-              onClick={handleSwitchToReplay}
-              disabled={isBusy}
-              style={modeToggleBtnStyle(inReplayMode, "replay")}
-              title={t("topbar.switchToReplay")}
-            >
-              {t("topbar.replay")}
-            </button>
-          </div>
-
-          {/* Play / Pause — adapts to mode */}
+      {typeof document !== "undefined" && createPortal(
+        <section style={rightDockStyle} aria-label="player menu">
+          {hudMenuOpen && (
+            <div style={dockMenuStyle}>
+              <HudButton icon="character" label="我的角色"
+                onClick={onToggleUserCharactersPanel ?? (() => EventBus.instance.emit("focus_user_character"))}
+                disabled={inReplayMode} active={userCharactersPanelOpen ?? false} title="管理并切换我的角色" />
+              {onToggleNpcPanel && (
+                <HudButton icon="character" label="NPC"
+                  onClick={onToggleNpcPanel} disabled={inReplayMode}
+                  active={npcPanelOpen ?? false} title="查看当前世界的 NPC" />
+              )}
+              {onToggleInventoryPanel && (
+                <HudButton icon="inventory" label="背包"
+                  onClick={onToggleInventoryPanel} disabled={inReplayMode}
+                  active={inventoryPanelOpen ?? false} title="查看当前角色背包" />
+              )}
+              {onToggleTradePanel && (
+                <HudButton icon="inventory" label="交易"
+                  onClick={onToggleTradePanel} disabled={inReplayMode}
+                  active={tradePanelOpen ?? false} title="赠送和交换物品" />
+              )}
+              <HudButton icon="online" label="邀请玩家"
+                onClick={() => setOnlinePanelOpen((prev) => !prev)}
+                disabled={inReplayMode} active={onlinePanelOpen} title="查看在线玩家、邀请和踢出访客" />
+              {onToggleTimelinePanel && (
+                <HudButton icon="chat" label="日志"
+                  onClick={onToggleTimelinePanel}
+                  active={timelinePanelOpen ?? false}
+                  title="查看世界事件日志" />
+              )}
+              {onToggleTasksPanel && (
+                <HudButton icon="build" label="任务"
+                  onClick={onToggleTasksPanel}
+                  active={tasksPanelOpen ?? false}
+                  title="查看新手引导任务" />
+              )}
+              <HudButton icon="chat" label="单人聊天"
+                onClick={() => { setSandboxChatOpen(true); pauseWorldIfNeeded(); }}
+                disabled={inReplayMode} active={sandboxChatOpen} title={t("topbar.sandboxChatTitle")} />
+              {onToggleBuildPanel && resources !== null && resources !== undefined && (
+                <HudButton icon="build" label="生成NPC"
+                  onClick={onToggleBuildPanel} disabled={inReplayMode}
+                  active={(buildPanelOpen ?? false) && buildPanelMode === "character"} title="生成 NPC" />
+              )}
+              {onToggleMapPanel && resources !== null && resources !== undefined && (
+                <HudButton icon="world" label="地图"
+                  onClick={onToggleMapPanel} disabled={inReplayMode}
+                  active={(buildPanelOpen ?? false) && buildPanelMode === "map"} title="地图节点与新地图生成" />
+              )}
+              <HudButton icon="observer" label="上帝模式"
+                onClick={() => setGodPanelOpen(true)} disabled={inReplayMode}
+                active={godPanelOpen} title={t("topbar.godModeTitle")} />
+              <button
+                onClick={onToggleDevMode}
+                style={chipBtnStyle(isDevMode)}
+                title={isDevMode ? t("topbar.disableDevMode") : t("topbar.enableDevMode")}
+              >
+                {isDevMode ? "Dev 已开" : "工具"}
+              </button>
+              {isDevMode && (
+                <div style={devToolGridStyle}>
+                  <select
+                    value={String(worldInfo?.sceneConfig.tickDurationMinutes ?? 15)}
+                    onChange={handleDevTickGranularityChange}
+                    disabled={isBusy || inReplayMode}
+                    style={{ ...selectStyle, width: "100%" }}
+                    title={t("topbar.tickTitle")}
+                  >
+                    <option value="15">15 min</option>
+                    <option value="30">30 min</option>
+                    <option value="60">1 h</option>
+                  </select>
+                  <button onClick={onToggleWalkableOverlay} style={chipBtnStyle(showWalkableOverlay)}>{t("topbar.devWalkable")}</button>
+                  <button onClick={onToggleRegionBoundsOverlay} style={chipBtnStyle(showRegionBoundsOverlay)}>{t("topbar.devRegions")}</button>
+                  <button onClick={onToggleMainAreaPointsOverlay} style={chipBtnStyle(showMainAreaPointsOverlay)}>{t("topbar.devPoints")}</button>
+                  <button onClick={onToggleInteractiveObjectsOverlay} style={chipBtnStyle(showInteractiveObjectsOverlay)}>{t("topbar.devInteractive")}</button>
+                </div>
+              )}
+            </div>
+          )}
           <button
-            onClick={onToggleAutoPlay}
-            disabled={inRunMode ? autoPlayToggleDisabled : false}
-            style={{
-              ...primaryBtnStyle,
-              background: autoPlayEnabled
-                ? (inReplayMode ? "rgba(225,112,85,0.28)" : "rgba(116,185,255,0.24)")
-                : (inReplayMode ? "rgba(225,112,85,0.14)" : "rgba(116,185,255,0.14)"),
-              borderColor: inReplayMode ? "rgba(225,112,85,0.5)" : "rgba(116,185,255,0.45)",
-              cursor: (inRunMode && autoPlayToggleDisabled) ? "wait" : "pointer",
-              opacity: (inRunMode && autoPlayToggleDisabled) ? 0.6 : 1,
-              minWidth: 60,
-            }}
+            onClick={() => setHudMenuOpen((prev) => !prev)}
+            style={dockToggleStyle(hudMenuOpen)}
+            title={hudMenuOpen ? "收起玩家菜单" : "展开玩家菜单"}
           >
-            {autoPlayEnabled
-              ? (inReplayMode ? t("topbar.pauseReplay") : t("topbar.pauseRun"))
-              : (inReplayMode ? t("topbar.playReplay") : t("topbar.playRun"))}
+            <GameIcon name={hudMenuOpen ? "world" : "character"} size={38} title="玩家菜单" />
+            <span style={{ fontSize: 12, fontWeight: 900 }}>{hudMenuOpen ? "收起" : "菜单"}</span>
           </button>
-        </div>
-      </div>
-
-      {/* Replay progress bar (only in replay mode) */}
-      {inReplayMode && replayProgress && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 2px" }}>
-          <span style={{ fontSize: 11, color: "#e17055", fontWeight: 600, whiteSpace: "nowrap" }}>
-            {replayProgress.current}/{replayProgress.total}
-          </span>
-          <div style={{ flex: 1, height: 4, background: "rgba(255,255,255,0.08)", borderRadius: 2, overflow: "hidden" }}>
-            <div style={{
-              height: "100%",
-              width: `${replayProgress.total > 0 ? (replayProgress.current / replayProgress.total) * 100 : 0}%`,
-              background: "linear-gradient(90deg, #e17055, #f39c12)",
-              borderRadius: 2,
-              transition: "width 0.3s ease",
-            }} />
-          </div>
-        </div>
+        </section>,
+        document.body,
       )}
-
-      {/* Row 2: Management + Tools */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        
-        {/* Left: World & Timeline Management */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {/* World selector */}
-          {allWorlds.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{t("topbar.worldLabel")}</span>
-              <select value={selectedWorldId} onChange={handleWorldChange}
-                disabled={isBusy} style={{ ...selectStyle, maxWidth: 180 }}>
-                {availableWorlds.length > 0 && (
-                  <optgroup label={t("topbar.myWorlds")}>
-                    {availableWorlds.map((world) => (
-                      <option key={world.id} value={world.id}>{world.worldName}</option>
-                    ))}
-                  </optgroup>
-                )}
-                {sortedLibraryWorlds.length > 0 && (
-                  <optgroup label={t("topbar.sampleWorlds")}>
-                    {sortedLibraryWorlds.map((world) => (
-                      <option key={world.id} value={world.id}>{world.worldName}</option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
-            </div>
-          )}
-
-          {/* Timeline selector */}
-          {timelines.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{t("topbar.timelineLabel")}</span>
-              <select value={selectedTimelineId} onChange={handleTimelineChange}
-                disabled={isBusy} style={{ ...selectStyle, maxWidth: 180 }}>
-                {timelines.map((tl, idx) => (
-                  <option key={tl.id} value={tl.id}>{formatTimelineLabel(tl, timelines.length - idx)}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          <button onClick={() => setManagerModalOpen(true)} disabled={isBusy}
-            style={chipBtnStyle(managerModalOpen)}
-            title={t("topbar.manageTitle")}>
-            {t("topbar.manage")}
-          </button>
-
-          {inRunMode && (
-            <>
-              <span style={{ width: 1, height: 18, background: "rgba(255,255,255,0.12)", flexShrink: 0, margin: "0 2px" }} />
-              <button
-                onClick={onNewTimeline}
-                disabled={isBusy}
-                style={{
-                  ...secondaryBtnStyle,
-                  borderRadius: 999,
-                  color: "#a3d8ff",
-                  borderColor: "rgba(116,185,255,0.4)",
-                  background: "rgba(116,185,255,0.12)",
-                  cursor: isBusy ? "wait" : "pointer",
-                  opacity: isBusy ? 0.7 : 1,
-                }}
-              >
-                {isResetting ? t("topbar.creatingTimeline") : t("topbar.newTimeline")}
-              </button>
-              <button
-                onClick={() => { pauseWorldIfNeeded(); navigate("/create"); }}
-                disabled={isResetting || isSwitchingWorld}
-                style={newWorldBtnStyle(isResetting || isSwitchingWorld)}
-                title={t("topbar.newWorldTitle")}
-              >
-                {t("topbar.newWorld")}
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* Right: feature entries + tools */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button onClick={() => navigate("/timeline")} style={chipBtnStyle(false)}>{t("topbar.eventLog")}</button>
-          <button
-            onClick={() => setOnlinePanelOpen((prev) => !prev)}
-            disabled={inReplayMode}
-            style={{ ...chipBtnStyle(onlinePanelOpen), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
-            title="查看在线玩家、邀请和踢出访客"
-          >
-            👥 在线
-          </button>
-          {onToggleUserAccountPanel && (
-            <button
-              onClick={onToggleUserAccountPanel}
-              disabled={inReplayMode}
-              style={{ ...chipBtnStyle(userAccountPanelOpen ?? false), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
-              title="管理本地用户账户"
-            >
-              👤 用户
-            </button>
-          )}
-          <button
-            onClick={onToggleUserCharactersPanel ?? (() => EventBus.instance.emit("focus_user_character"))}
-            disabled={inReplayMode}
-            style={{ ...chipBtnStyle(userCharactersPanelOpen ?? false), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
-            title="管理并切换我的角色"
-          >
-            🎯 我的角色
-          </button>
-          {onToggleInventoryPanel && (
-            <button
-              onClick={onToggleInventoryPanel}
-              disabled={inReplayMode}
-              style={{ ...chipBtnStyle(inventoryPanelOpen ?? false), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
-              title="查看当前角色背包"
-            >
-              🎒 背包
-            </button>
-          )}
-          <button
-            onClick={() => setGodPanelOpen(true)}
-            disabled={inReplayMode}
-            style={{ ...chipBtnStyle(godPanelOpen), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
-            title={t("topbar.godModeTitle")}
-          >
-            {t("topbar.godMode")}
-          </button>
-          <button
-            onClick={() => { setSandboxChatOpen(true); pauseWorldIfNeeded(); }}
-            disabled={inReplayMode}
-            style={{ ...chipBtnStyle(sandboxChatOpen), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
-            title={t("topbar.sandboxChatTitle")}
-          >
-            {t("topbar.sandboxChat")}
-          </button>
-          {onToggleBuildPanel && resources !== null && resources !== undefined && (
-            <button
-              onClick={onToggleBuildPanel}
-              disabled={inReplayMode}
-              style={{ ...chipBtnStyle(buildPanelOpen ?? false), opacity: inReplayMode ? 0.4 : 1, cursor: inReplayMode ? "not-allowed" : "pointer" }}
-              title="建造面板"
-            >
-              🏗️ 建造
-            </button>
-          )}
-
-          {isDevMode && (
-            <>
-              <span style={{ width: 1, height: 18, background: "rgba(255,255,255,0.12)", flexShrink: 0, margin: "0 2px" }} />
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 11, opacity: 0.72, whiteSpace: "nowrap" }}>{t("topbar.tickLabel")}</span>
-                <select
-                  value={String(worldInfo?.sceneConfig.tickDurationMinutes ?? 15)}
-                  onChange={handleDevTickGranularityChange}
-                  disabled={isBusy || inReplayMode}
-                  style={selectStyle}
-                  title={t("topbar.tickTitle")}
-                >
-                  <option value="15">15 min</option>
-                  <option value="30">30 min</option>
-                  <option value="60">1 h</option>
-                </select>
-              </div>
-              <button onClick={onToggleWalkableOverlay} style={chipBtnStyle(showWalkableOverlay)}>{t("topbar.devWalkable")}</button>
-              <button onClick={onToggleRegionBoundsOverlay} style={chipBtnStyle(showRegionBoundsOverlay)}>{t("topbar.devRegions")}</button>
-              <button onClick={onToggleMainAreaPointsOverlay} style={chipBtnStyle(showMainAreaPointsOverlay)}>{t("topbar.devPoints")}</button>
-              <button onClick={onToggleInteractiveObjectsOverlay} style={chipBtnStyle(showInteractiveObjectsOverlay)}>{t("topbar.devInteractive")}</button>
-            </>
-          )}
-
-          <span style={{ width: 1, height: 18, background: "rgba(255,255,255,0.12)", flexShrink: 0, margin: "0 2px" }} />
-
-          <button 
-            onClick={onToggleDevMode} 
-            style={chipBtnStyle(isDevMode)} 
-            title={isDevMode ? t("topbar.disableDevMode") : t("topbar.enableDevMode")}
-          >
-            {isDevMode ? "🛠️ Dev" : "🛠️"}
-          </button>
-
-          <LanguageToggle />
-        </div>
-      </div>
 
       <style>{`
         @keyframes pulse {
@@ -700,7 +695,7 @@ function ResourceDisplay({ resources }: { resources: number | null | undefined }
         }}
         title="资源"
       >
-        <span style={{ fontSize: 16 }}>💎</span>
+        <GameIcon name="resource" size={24} title="资源" />
         <span style={{ minWidth: 20, textAlign: "right" }}>
           {resources}
         </span>
@@ -722,7 +717,308 @@ function ResourceDisplay({ resources }: { resources: number | null | undefined }
   );
 }
 
+function HudButton({
+  icon,
+  label,
+  active = false,
+  disabled = false,
+  title,
+  onClick,
+}: {
+  icon: GameIconName;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...chipBtnStyle(active),
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "5px 11px 5px 7px",
+        opacity: disabled ? 0.44 : 1,
+        cursor: disabled ? "not-allowed" : "pointer",
+      }}
+      title={title || label}
+    >
+      <GameIcon name={icon} size={24} title={label} />
+      <span style={{ whiteSpace: "nowrap" }}>{label}</span>
+    </button>
+  );
+}
+
+function IconOnlyButton({
+  icon,
+  label,
+  active = false,
+  disabled = false,
+  onClick,
+}: {
+  icon: GameIconName;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...iconOnlyBtnStyle(active),
+        opacity: disabled ? 0.44 : 1,
+        cursor: disabled ? "not-allowed" : "pointer",
+      }}
+      title={label}
+    >
+      <GameIcon name={icon} size={30} title={label} />
+    </button>
+  );
+}
+
+function AccountTextButton({
+  label,
+  active = false,
+  disabled = false,
+  onClick,
+}: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...accountTextBtnStyle(active),
+        opacity: disabled ? 0.44 : 1,
+        cursor: disabled ? "not-allowed" : "pointer",
+      }}
+      title={label}
+    >
+      {label}
+    </button>
+  );
+}
+
 // --- Styles ---
+
+const hudRootStyle: CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 100,
+  pointerEvents: "none",
+  color: "#eef4ff",
+  fontFamily: "system-ui, sans-serif",
+};
+
+const hudPanelStyle: CSSProperties = {
+  position: "fixed",
+  pointerEvents: "auto",
+  color: "#eef4ff",
+  ...darkGlassSubtlePanelStyle,
+};
+
+const topLeftPanelStyle: CSSProperties = {
+  top: 14,
+  left: 14,
+  width: "min(360px, calc(100vw - 28px))",
+  borderRadius: 18,
+  padding: 8,
+};
+
+const topCenterPanelStyle: CSSProperties = {
+  top: 74,
+  left: 14,
+  transform: "none",
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  maxWidth: "min(520px, calc(100vw - 28px))",
+  minWidth: "min(320px, calc(100vw - 28px))",
+  borderRadius: 999,
+  padding: "7px 9px",
+};
+
+const topRightPanelStyle: CSSProperties = {
+  top: 14,
+  right: 14,
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  borderRadius: 999,
+  padding: "7px 9px",
+};
+
+const worldBadgeButtonStyle: CSSProperties = {
+  width: "100%",
+  display: "flex",
+  alignItems: "center",
+  gap: 9,
+  padding: 0,
+  border: "none",
+  background: "transparent",
+  color: "inherit",
+  textAlign: "left",
+  cursor: "pointer",
+};
+
+const worldTitleStyle: CSSProperties = {
+  display: "block",
+  maxWidth: 250,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  fontSize: 16,
+  fontWeight: 900,
+  lineHeight: 1.1,
+};
+
+const worldMetaStyle: CSSProperties = {
+  display: "block",
+  marginTop: 3,
+  fontSize: 12,
+  lineHeight: 1.1,
+  color: "rgba(238,244,255,0.66)",
+  whiteSpace: "nowrap",
+};
+
+const worldTrayStyle: CSSProperties = {
+  marginTop: 10,
+  display: "grid",
+  gap: 8,
+  padding: "10px 10px 8px",
+  borderTop: "1px solid rgba(255,255,255,0.1)",
+};
+
+const trayFieldStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+};
+
+const trayLabelStyle: CSSProperties = {
+  fontSize: 11,
+  color: "rgba(238,244,255,0.62)",
+};
+
+const replayProgressStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  color: "#ffd2cf",
+  fontSize: 11,
+  minWidth: 88,
+};
+
+const replayTrackStyle: CSSProperties = {
+  position: "relative",
+  display: "inline-block",
+  width: 54,
+  height: 4,
+  overflow: "hidden",
+  borderRadius: 999,
+  background: "rgba(255,255,255,0.1)",
+};
+
+const replayFillStyle: CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  right: "auto",
+  background: "linear-gradient(90deg, #e17055, #f39c12)",
+  borderRadius: 999,
+  transition: "width 0.3s ease",
+};
+
+const rightDockStyle: CSSProperties = {
+  position: "fixed",
+  right: 18,
+  bottom: 24,
+  zIndex: 2600,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "flex-end",
+  gap: 10,
+  pointerEvents: "auto",
+};
+
+const dockMenuStyle: CSSProperties = {
+  width: 180,
+  display: "grid",
+  gap: 8,
+  padding: 10,
+  borderRadius: 18,
+  ...darkGlassPanelStyle,
+};
+
+const devToolGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  gap: 6,
+  paddingTop: 8,
+  borderTop: "1px solid rgba(255,255,255,0.1)",
+};
+
+function dockToggleStyle(active: boolean): CSSProperties {
+  return {
+    width: 76,
+    height: 76,
+    display: "grid",
+    placeItems: "center",
+    alignContent: "center",
+    gap: 0,
+    borderRadius: 22,
+    border: active ? "1px solid rgba(116,185,255,0.5)" : darkGlassSubtlePanelStyle.border,
+    background: active
+      ? "linear-gradient(180deg, rgba(116,185,255,0.24), rgba(104,39,230,0.18))"
+      : darkGlassSubtlePanelStyle.background,
+    color: "#eef4ff",
+    boxShadow: active ? "0 12px 36px rgba(104,39,230,0.24)" : darkGlassSubtlePanelStyle.boxShadow,
+    cursor: "pointer",
+    backdropFilter: darkGlassSubtlePanelStyle.backdropFilter,
+    WebkitBackdropFilter: darkGlassSubtlePanelStyle.WebkitBackdropFilter,
+  };
+}
+
+function iconOnlyBtnStyle(active: boolean): CSSProperties {
+  return {
+    width: 46,
+    height: 46,
+    display: "grid",
+    placeItems: "center",
+    borderRadius: 16,
+    border: active ? "1px solid rgba(116,185,255,0.5)" : "1px solid rgba(238,244,255,0.1)",
+    background: active ? "rgba(116,185,255,0.16)" : "rgba(12,16,31,0.5)",
+    boxShadow: active ? "0 8px 24px rgba(116,185,255,0.2)" : "none",
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
+  };
+}
+
+function accountTextBtnStyle(active: boolean): CSSProperties {
+  return {
+    minWidth: 54,
+    height: 38,
+    padding: "0 14px",
+    borderRadius: 999,
+    border: active ? "1px solid rgba(116,185,255,0.5)" : "1px solid rgba(238,244,255,0.1)",
+    background: active ? "rgba(116,185,255,0.16)" : "rgba(12,16,31,0.5)",
+    color: active ? "#dff3ff" : "#eef4ff",
+    fontSize: 13,
+    fontWeight: 900,
+    letterSpacing: 0,
+    boxShadow: active ? "0 8px 24px rgba(116,185,255,0.2)" : "none",
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
+  };
+}
 
 const primaryBtnStyle: CSSProperties = {
   color: "#fff",
@@ -766,6 +1062,9 @@ function chipBtnStyle(active: boolean): CSSProperties {
 
 function newWorldBtnStyle(disabled: boolean): CSSProperties {
   return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
     background: disabled
       ? "rgba(255,255,255,0.08)"
       : "linear-gradient(120deg, rgba(116,185,255,0.32), rgba(165,91,255,0.32))",

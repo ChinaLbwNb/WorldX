@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import { generateMap } from "./steps/step1-generate-map.mjs";
@@ -19,7 +19,12 @@ import { normalizeWorldDesign } from "../../../orchestrator/src/world-design-uti
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORLD_SEED_ROOT = join(__dirname, "../../..");
 dotenv.config({ path: join(WORLD_SEED_ROOT, ".env") });
-const OUTPUT_DIR = process.env.MAP_OUTPUT_DIR || join(WORLD_SEED_ROOT, "output/maps");
+function resolveDataDir() {
+  const configured = process.env.WORLDX_DATA_DIR?.trim();
+  return configured ? resolve(WORLD_SEED_ROOT, configured) : join(WORLD_SEED_ROOT, "output");
+}
+
+const OUTPUT_DIR = process.env.MAP_OUTPUT_DIR || join(resolveDataDir(), "maps");
 const MAP_IMAGE_SIZE = getMapImageSizeLabel();
 
 installPhaseStepLogPrefix("Phase 2");

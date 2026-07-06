@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { apiClient } from "../ui/services/api-client";
+import { networkManager } from "./NetworkManager";
 import type {
   GameTime,
   SimulationEvent,
@@ -18,11 +19,24 @@ type TickResponse = {
   canSwitchContext?: boolean;
 };
 
+type RemoteTickPayload = {
+  gameTime?: GameTime;
+  worldTime?: WorldTimeInfo;
+  events?: SimulationEvent[];
+  sourceUserCharacterId?: string;
+  scope?: {
+    worldId?: string;
+    timelineId?: string;
+    mapId?: string;
+  };
+};
+
 export type PlaybackMode = "live" | "replay";
 
 type LiveSimulationContext = {
   worldId: string;
   timelineId: string;
+  userCharacterId?: string;
 };
 
 export class PlaybackController extends Phaser.Events.EventEmitter {
@@ -39,6 +53,7 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
   private playbackInProgress = false;
   private requestInFlight = false;
   private prefetchedTick: TickResponse | null = null;
+  private pendingRemoteTick: RemoteTickPayload | null = null;
   private liveContext: LiveSimulationContext | null = null;
   private sceneConfig: SceneConfigInfo | null = null;
   private cycleTicks = 48;
@@ -53,21 +68,20 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
 
   constructor(private globalEventBus: Phaser.Events.EventEmitter) {
     super();
+    this.globalEventBus.on("simulation_events", (payload: RemoteTickPayload) => {
+      void this.applyRemoteTick(payload);
+    });
   }
 
   async initialize(): Promise<void> {
+    const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
     const [worldTime, worldInfo] = await Promise.all([
-      apiClient.getWorldTime(),
-      apiClient.getWorldInfo(),
+      apiClient.getWorldTime(userCharacterId),
+      apiClient.getWorldInfo(userCharacterId),
     ]);
     this.currentTime = worldTime;
     this.sceneConfig = worldInfo.sceneConfig;
-    if (worldInfo.currentWorldId && worldInfo.currentTimelineId) {
-      this.liveContext = {
-        worldId: worldInfo.currentWorldId,
-        timelineId: worldInfo.currentTimelineId,
-      };
-    }
+    this.updateLiveContext(worldInfo);
     this.globalEventBus.emit("time_update", { ...this.currentTime });
     this.globalEventBus.emit("simulation_status", { status: "idle" });
     this.emitPlaybackState();
@@ -94,7 +108,10 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
     this.prefetchedTick = null;
 
     try {
-      const { frames } = await apiClient.getTimelineEvents(timelineId);
+      const { frames } = await apiClient.getTimelineEvents(
+        timelineId,
+        networkManager.getSelectedUserCharacterId() || undefined,
+      );
       if (frames.length === 0) {
         console.warn("[PlaybackController] No events to replay");
         return;
@@ -325,26 +342,12 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
     try {
       const result = this.prefetchedTick ?? await this.fetchTick();
       this.prefetchedTick = null;
-      this.currentTime = result.gameTime;
-
-      this.globalEventBus.emit("tick_playback_started", {
-        gameTime: result.gameTime,
-        eventCount: result.events?.length ?? 0,
-      });
-      for (const event of result.events || []) {
-        this.emit("event", event);
-      }
-      this.globalEventBus.emit("time_update", { ...this.currentTime });
-      this.globalEventBus.emit("tick_playback_events_flushed", {
-        gameTime: result.gameTime,
-        eventCount: result.events?.length ?? 0,
-      });
+      await this.playLiveTick(result.gameTime, result.events || []);
 
       if (this.autoPlay) {
         this.ensurePrefetch();
       }
 
-      await this.waitForTickPlaybackCompletion(result.events?.length ?? 0);
       this.globalEventBus.emit("simulation_status", {
         status: this.autoPlay ? "running" : this.requestInFlight ? "pausing" : "paused",
         eventCount: result.eventCount,
@@ -363,6 +366,11 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
       });
     } finally {
       this.playbackInProgress = false;
+      const pending = this.pendingRemoteTick;
+      this.pendingRemoteTick = null;
+      if (pending) {
+        void this.applyRemoteTick(pending);
+      }
       if (this.autoPlay) {
         this.nextTickDueAt = this.tickStartedAt + this.tickIntervalMs;
       } else {
@@ -373,15 +381,113 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
 
   private async fetchTick(): Promise<TickResponse> {
     if (!this.liveContext) {
+      await this.refreshLiveContext();
+    }
+    if (!this.liveContext) {
       throw new Error("Simulation context is not ready.");
     }
 
     this.requestInFlight = true;
     try {
-      return await apiClient.simulateTick(this.liveContext);
+      try {
+        return await apiClient.simulateTick(this.liveContext);
+      } catch (error) {
+        if (!this.isStaleSimulationContextError(error)) throw error;
+        await this.refreshLiveContext();
+        if (!this.liveContext) throw error;
+        return await apiClient.simulateTick(this.liveContext);
+      }
     } finally {
       this.requestInFlight = false;
     }
+  }
+
+  private async applyRemoteTick(payload: RemoteTickPayload): Promise<void> {
+    if (this.mode !== "live") return;
+    if (payload?.sourceUserCharacterId && payload.sourceUserCharacterId === networkManager.getSelectedUserCharacterId()) {
+      return;
+    }
+    if (!this.remoteTickMatchesLiveContext(payload)) return;
+    if (this.playbackInProgress) {
+      this.pendingRemoteTick = payload;
+      return;
+    }
+    const worldTime = payload.worldTime ?? (payload.gameTime ? this.buildWorldTimeInfo(payload.gameTime) : null);
+    if (!worldTime) return;
+
+    this.prefetchedTick = null;
+    this.playbackInProgress = true;
+    this.tickStartedAt = performance.now();
+    this.globalEventBus.emit("simulation_status", {
+      status: "running",
+      autoPlay: this.autoPlay,
+      tickIntervalMs: this.tickIntervalMs,
+    });
+    try {
+      await this.playLiveTick(worldTime, payload.events || []);
+      this.globalEventBus.emit("simulation_status", {
+        status: this.autoPlay ? "running" : "idle",
+        eventCount: payload.events?.length ?? 0,
+        autoPlay: this.autoPlay,
+        tickIntervalMs: this.tickIntervalMs,
+      });
+    } finally {
+      this.playbackInProgress = false;
+    }
+  }
+
+  private remoteTickMatchesLiveContext(payload: RemoteTickPayload): boolean {
+    if (!payload.scope || !this.liveContext) return true;
+    return payload.scope.worldId === this.liveContext.worldId
+      && payload.scope.timelineId === this.liveContext.timelineId;
+  }
+
+  private async playLiveTick(gameTime: WorldTimeInfo, events: SimulationEvent[]): Promise<void> {
+    this.currentTime = gameTime;
+
+    this.globalEventBus.emit("tick_playback_started", {
+      gameTime,
+      eventCount: events.length,
+    });
+    for (const event of events) {
+      this.emit("event", event);
+    }
+    this.globalEventBus.emit("time_update", { ...this.currentTime });
+    this.globalEventBus.emit("tick_playback_events_flushed", {
+      gameTime,
+      eventCount: events.length,
+    });
+    await this.waitForTickPlaybackCompletion(events.length);
+  }
+
+  private async refreshLiveContext(): Promise<void> {
+    const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+    const [worldTime, worldInfo] = await Promise.all([
+      apiClient.getWorldTime(userCharacterId),
+      apiClient.getWorldInfo(userCharacterId),
+    ]);
+    this.currentTime = worldTime;
+    this.sceneConfig = worldInfo.sceneConfig;
+    this.updateLiveContext(worldInfo);
+    this.globalEventBus.emit("time_update", { ...this.currentTime });
+  }
+
+  private updateLiveContext(worldInfo: { currentWorldId?: string | null; currentTimelineId?: string | null }): void {
+    const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+    if (worldInfo.currentWorldId && worldInfo.currentTimelineId) {
+      this.liveContext = {
+        worldId: worldInfo.currentWorldId,
+        timelineId: worldInfo.currentTimelineId,
+        userCharacterId,
+      };
+      return;
+    }
+    this.liveContext = null;
+  }
+
+  private isStaleSimulationContextError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("API 409") && message.includes("Simulation context changed");
   }
 
   private ensurePrefetch(): void {

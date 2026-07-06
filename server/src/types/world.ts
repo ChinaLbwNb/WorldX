@@ -146,7 +146,7 @@ export interface WorldConfig {
   mainAreaPoints?: MainAreaPointConfig[];
   worldSize?: WorldSizeConfig;
   activeMapId?: string;
-  worldMaps?: WorldMapNodeConfig[];
+  mapNodes?: WorldMapNodeConfig[];
   mapLinks?: WorldMapLinkConfig[];
   mapSpawnPoints?: MapSpawnPointConfig[];
 }

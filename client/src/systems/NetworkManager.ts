@@ -1,8 +1,6 @@
 import { EventBus } from "../EventBus";
 
-const LS_PLAYER_ID = "worldx_player_id";
 const LS_PLAYER_NAME = "worldx_player_name";
-const LS_INVITE_CODE = "worldx_invite_code";
 const LS_USER_ID = "worldx_user_id";
 const LS_AUTH_TOKEN = "worldx_auth_token";
 const LS_USER_CHARACTER_ID = "worldx_user_character_id";
@@ -41,7 +39,7 @@ export class NetworkManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private url: string;
   private connectedPlayerData: { playerId: string; player: PlayerData } | null = null;
-  /** 被服务端拒绝（如邀请码错误）后置 true，停止自动重连 */
+  /** 被服务端拒绝后置 true，停止自动重连 */
   private rejected = false;
 
   constructor() {
@@ -50,16 +48,14 @@ export class NetworkManager {
     this.url = `${protocol}//${window.location.host}/ws`;
   }
 
-  /** 构造带握手参数的 WS 地址：昵称 / 邀请码 / 已有玩家ID（用于重连复用身份） */
+  /** 构造带握手参数的 WS 地址：昵称 / 已有玩家ID（用于重连复用身份） */
   private buildUrl(): string {
     const params = new URLSearchParams();
     const name = localStorage.getItem(LS_PLAYER_NAME);
-    const code = localStorage.getItem(LS_INVITE_CODE);
     const uid = this.getUserId();
     const token = localStorage.getItem(LS_AUTH_TOKEN);
-    const pid = this.playerId ?? localStorage.getItem(LS_USER_CHARACTER_ID) ?? localStorage.getItem(LS_PLAYER_ID);
+    const pid = this.playerId ?? localStorage.getItem(LS_USER_CHARACTER_ID);
     if (name) params.set("name", name);
-    if (code) params.set("code", code);
     if (token) params.set("token", token);
     if (uid) params.set("uid", uid);
     if (pid) params.set("pid", pid);
@@ -108,14 +104,12 @@ export class NetworkManager {
           playerId: msg.data.playerId,
           player: msg.data.player,
         };
-        // 持久化玩家ID，刷新/断线重连时复用同一化身
-        if (this.playerId) localStorage.setItem(LS_PLAYER_ID, this.playerId);
         this.eventBus.emit("network_connected", msg.data);
         break;
       }
 
       case "join_rejected": {
-        // 邀请码错误等：停止自动重连，交给 UI 处理
+        // 认证失败等：停止自动重连，交给 UI 处理
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
@@ -131,7 +125,7 @@ export class NetworkManager {
           this.reconnectTimer = null;
         }
         this.rejected = true;
-        this.eventBus.emit("player_kicked", msg.data);
+        this.eventBus.emit("user_character_kicked", msg.data);
         try {
           this.ws?.close();
         } catch {
@@ -140,33 +134,49 @@ export class NetworkManager {
         break;
       }
 
-      case "players_online": {
-        this.eventBus.emit("players_online", msg.data);
+      case "world_invite_received":
+      case "world_invite_accepted":
+      case "world_invite_declined": {
+        this.eventBus.emit(msg.type, msg.data);
         break;
       }
 
-      case "player_joined": {
-        this.eventBus.emit("player_joined", msg.data);
+      case "user_characters_online": {
+        this.eventBus.emit("user_characters_online", msg.data);
         break;
       }
 
-      case "player_left": {
-        this.eventBus.emit("player_left", msg.data);
+      case "user_character_joined": {
+        this.eventBus.emit("user_character_joined", msg.data);
         break;
       }
 
-      case "player_moved": {
-        this.eventBus.emit("player_moved", msg.data);
+      case "user_character_left": {
+        this.eventBus.emit("user_character_left", msg.data);
         break;
       }
 
-      case "player_mode_changed": {
-        this.eventBus.emit("remote_player_mode_changed", msg.data);
+      case "user_character_moved": {
+        this.eventBus.emit("user_character_moved", msg.data);
         break;
       }
 
-      case "player_chat": {
-        this.eventBus.emit("player_chat", msg.data);
+      case "user_character_mode_changed": {
+        this.eventBus.emit("remote_user_character_mode_changed", msg.data);
+        break;
+      }
+
+      case "user_character_chat": {
+        this.eventBus.emit("user_character_chat", msg.data);
+        break;
+      }
+
+      case "map_item_placed":
+      case "map_item_picked_up":
+      case "item_transfer_requested":
+      case "item_transfer_completed":
+      case "item_transfer_cancelled": {
+        this.eventBus.emit(msg.type, msg.data);
         break;
       }
 
@@ -228,23 +238,20 @@ export class NetworkManager {
   clearSelectedUserCharacter(): void {
     this.disconnect({ notifyServer: true });
     localStorage.removeItem(LS_USER_CHARACTER_ID);
-    localStorage.removeItem(LS_PLAYER_ID);
     localStorage.removeItem(LS_PLAYER_NAME);
     this.playerId = null;
     this.connectedPlayerData = null;
     this.rejected = false;
   }
 
-  /** UI 设置身份（昵称 + 邀请码），写入 localStorage，下次连接生效 */
-  setIdentity(name: string, code: string): void {
+  /** UI 设置身份昵称，写入 localStorage，下次连接生效 */
+  setIdentity(name: string): void {
     localStorage.setItem(LS_PLAYER_NAME, name.trim().slice(0, 24));
-    localStorage.setItem(LS_INVITE_CODE, code.trim());
     this.rejected = false;
   }
 
   setSelectedUserCharacter(characterId: string, name: string): void {
     localStorage.setItem(LS_USER_CHARACTER_ID, characterId);
-    localStorage.setItem(LS_PLAYER_ID, characterId);
     localStorage.setItem(LS_PLAYER_NAME, name.trim().slice(0, 24));
     this.playerId = characterId;
     this.connectedPlayerData = null;
@@ -252,7 +259,7 @@ export class NetworkManager {
   }
 
   getSelectedUserCharacterId(): string {
-    return localStorage.getItem(LS_USER_CHARACTER_ID) ?? localStorage.getItem(LS_PLAYER_ID) ?? "";
+    return localStorage.getItem(LS_USER_CHARACTER_ID) ?? "";
   }
 
   /** UI 重新连接（如修改身份后重试） */
@@ -271,7 +278,7 @@ export class NetworkManager {
     if (!this.ws) return;
     if (options.notifyServer && this.ws.readyState === WebSocket.OPEN) {
       try {
-        this.ws.send(JSON.stringify({ type: "player_disconnect", data: {} }));
+        this.ws.send(JSON.stringify({ type: "user_character_disconnect", data: {} }));
       } catch {
         // Ignore disconnect races.
       }
@@ -285,10 +292,6 @@ export class NetworkManager {
     return localStorage.getItem(LS_PLAYER_NAME) ?? "";
   }
 
-  getStoredCode(): string {
-    return localStorage.getItem(LS_INVITE_CODE) ?? "";
-  }
-
   send(type: string, data: any): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type, data }));
@@ -296,18 +299,18 @@ export class NetworkManager {
   }
 
   sendPosition(x: number, y: number, location: string, mainAreaPointId: string | null): void {
-    this.send("player_move", { x, y, location, mainAreaPointId });
+    this.send("user_character_move", { x, y, location, mainAreaPointId });
   }
 
   sendMode(mode: "avatar" | "god"): void {
-    this.send("player_mode", { mode });
+    this.send("user_character_mode", { mode });
   }
 
   sendChat(message: string): void {
-    this.send("player_chat", { message });
+    this.send("user_character_chat", { message });
   }
 
-  /** 公屏 @NPC：请求某个 AI 角色公开回复 */
+  /** 公屏 @NPC：请求某个 NPC 公开回复 */
   sendNpcChat(characterId: string, message: string): void {
     this.send("npc_chat", { characterId, message });
   }

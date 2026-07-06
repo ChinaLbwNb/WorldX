@@ -2,11 +2,9 @@ import Database from "better-sqlite3";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { getDataDir } from "../utils/data-dir.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const AUTH_DB_PATH = path.resolve(__dirname, "../../../output/auth.db");
+const AUTH_DB_PATH = getDataDir("auth.db");
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 let authDb: Database.Database | null = null;
@@ -156,6 +154,19 @@ export function getAuthDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_account_world_assets_user
       ON account_world_assets(user_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS account_world_members (
+      world_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      invited_by_user_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (world_id, user_id),
+      FOREIGN KEY (user_id) REFERENCES auth_users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_account_world_members_user
+      ON account_world_members(user_id, created_at);
 
     CREATE TABLE IF NOT EXISTS account_timeline_assets (
       id TEXT NOT NULL,

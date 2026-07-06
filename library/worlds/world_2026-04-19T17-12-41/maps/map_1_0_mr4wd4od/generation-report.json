@@ -1,0 +1,81 @@
+{
+  "targetMapId": "map_1_0_mr4wd4od",
+  "sourceMapId": "map_origin",
+  "userPrompt": "海边港口",
+  "validation": {
+    "passed": true,
+    "issues": []
+  },
+  "timings": {
+    "totalMs": 825595
+  },
+  "pipeline": {
+    "ok": true,
+    "runId": "map_1_0_mr4wd4od",
+    "runDir": "C:\\Users\\admin\\Downloads\\WorldX-main\\WorldX-main\\library\\worlds\\world_2026-04-19T17-12-41\\maps\\map_1_0_mr4wd4od.tmp-1783080958676",
+    "gridWidth": 256,
+    "gridHeight": 256,
+    "tileSize": 4,
+    "regions": 3,
+    "elements": 2,
+    "warnings": [
+      "Step 4: 可行走区域标注 review 最终未通过"
+    ],
+    "metadata": {
+      "runId": "map_1_0_mr4wd4od",
+      "userPrompt": "画面硬性限制：不要画任何文字、标题、标签、路牌字、箭头、图标、UI、水印、字幕、地图名、区域名或出生点标记。\n用户想生成的新地图：海边港口\n为同一个游戏世界生成一张新的独立本地地图，地图名参考为「海边港口」。\n它通过世界地图 UI 从「Post-Victory Pixel Hamlet」传送进入；不要表现成东南西北相邻区域，不要画拼接边界、入口箭头或传送门 UI。\n这是一张可以单独加载和游玩的俯视/轻横切像素风游戏地图，需要完整场景、清晰道路、可行走开阔区、建筑或功能区，以及少量可交互资源点。\n优先满足用户提示词，同时保持原世界的时代、题材、色调、建筑尺度、资源物件风格和游戏可读性一致。\n地图中央或主要道路附近保留一片自然的开阔可行走空地，适合玩家传送进入；不要用任何符号标出它。\n资源点要像自然物件或场景道具，不要做成带字的告示牌、菜单、铭牌或说明牌。\n避免人物大头像、重复旧图主体、纯装饰边框和无法通行的大面积封闭区域。\nUse English only in metadata. Do not render any written text inside the image.\n原世界参考：\nPost-Victory Pixel Hamlet\nA pixel-art RPG village where residents are figuring out new life purpose after the hero saved the world and left. A grand stone statue of the hero stands in the central plaza, with every corner holding traces of the past adventure era.\nA pixel-art RPG village after the hero saved the world and left. The NPCs must figure out what to do with their lives now. Characters: a peddler who strolls around town every day with nothing left to sell, a healer with no patients sitting idle in her cottage, a blacksmith who spent years forging the hero's legendary sword but now makes spoons, a bard who only knows one song — \"The Ballad of the Hero\", a child who insists they are the next hero, a guard who keeps repeating \"Nothing to report\", and a philosophical village chief who ponders the meaning of a world already saved.",
+      "startedAt": "2026-07-03T12:15:58.693Z",
+      "steps": {
+        "step1": {
+          "imageSize": "1K",
+          "width": 1024,
+          "height": 1024,
+          "bytes": 1939027,
+          "reviewPassed": true,
+          "attempts": 1
+        },
+        "step2": {
+          "width": 1024,
+          "height": 1024,
+          "originalBytes": 1939027,
+          "compressedBytes": 727553,
+          "savedBytes": 1211474,
+          "strategy": "low_loss_palette_png"
+        },
+        "step3": {
+          "source": "world_design",
+          "preparedRegionCount": 3,
+          "regionCount": 3,
+          "reviewPassed": true,
+          "attempts": 1,
+          "droppedRegionIds": []
+        },
+        "step3_2": {
+          "elementCount": 2,
+          "reviewPassed": true,
+          "attempts": 1,
+          "droppedElementIds": []
+        },
+        "step4": {
+          "bytes": 1791538,
+          "reviewPassed": false,
+          "attempts": 4
+        },
+        "step5": {
+          "gridWidth": 256,
+          "gridHeight": 256,
+          "tileSize": 4
+        }
+      },
+      "warnings": [
+        "Step 4: 可行走区域标注 review 最终未通过"
+      ],
+      "backgroundTiles": {
+        "manifest": "background-tiles/manifest.json",
+        "count": 1,
+        "tileSize": 1024
+      },
+      "completedAt": "2026-07-03T12:29:44.250Z"
+    }
+  }
+}

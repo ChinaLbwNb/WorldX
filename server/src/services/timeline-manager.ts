@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { GameTime, SimulationEvent } from "../types/index.js";
-import { listGeneratedWorlds, listLibraryWorlds } from "../utils/world-directories.js";
+import {
+  canUserManageWorld,
+  getUserWorldRole,
+  listGeneratedWorlds,
+  listLibraryWorlds,
+} from "../utils/world-directories.js";
 import * as accountAssets from "../store/account-asset-store.js";
 
 export interface TimelineMeta {
@@ -58,13 +63,14 @@ export class TimelineManager {
   initialize(worldDir: string, timelineId?: string, userId?: string): string {
     this.worldDir = worldDir;
     const worldId = path.basename(worldDir);
+    const effectiveUserId = this.isLibraryWorldDir(worldDir) ? undefined : userId;
 
     if (timelineId) {
       const dir = this.getTimelineDir(worldDir, timelineId);
       if (
         fs.existsSync(dir) &&
         fs.existsSync(path.join(dir, "meta.json")) &&
-        (!userId || accountAssets.userOwnsTimeline(userId, worldId, timelineId))
+        (!effectiveUserId || accountAssets.userOwnsTimeline(effectiveUserId, worldId, timelineId))
       ) {
         this.currentTimelineId = timelineId;
         this.tickCount = this.readMeta(worldDir, timelineId).tickCount;
@@ -72,7 +78,7 @@ export class TimelineManager {
       }
     }
 
-    const timelines = this.listTimelines(worldDir, userId);
+    const timelines = this.listTimelines(worldDir, effectiveUserId);
     if (timelines.length > 0) {
       const latest = timelines[0];
       this.currentTimelineId = latest.id;
@@ -80,10 +86,11 @@ export class TimelineManager {
       return latest.id;
     }
 
-    return this.createTimeline(worldDir, userId);
+    return this.createTimeline(worldDir, effectiveUserId);
   }
 
   createTimeline(worldDir: string, userId?: string): string {
+    const effectiveUserId = this.isLibraryWorldDir(worldDir) ? undefined : userId;
     let id = generateTimelineId();
     let dir = this.getTimelineDir(worldDir, id);
     while (fs.existsSync(dir)) {
@@ -103,9 +110,9 @@ export class TimelineManager {
       status: "recording",
     };
     fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2));
-    if (userId) {
+    if (effectiveUserId) {
       accountAssets.ensureTimelineAsset({
-        userId,
+        userId: effectiveUserId,
         worldId,
         timelineId: id,
         createdAt: meta.createdAt,
@@ -196,6 +203,8 @@ export class TimelineManager {
     worldId: string;
     worldName: string;
     source: string;
+    canManage: boolean;
+    role: string | null;
     isCurrent: boolean;
     timelines: TimelineMeta[];
   }[] {
@@ -209,9 +218,16 @@ export class TimelineManager {
       worldId: world.id,
       worldName: world.worldName,
       source: world.source,
+      canManage: canUserManageWorld(world, userId),
+      role: getUserWorldRole(world, userId),
       isCurrent: world.id === currentWorldId,
-      timelines: this.listTimelines(world.dir, userId),
+      timelines: this.listTimelines(world.dir, world.source === "library" ? undefined : userId),
     }));
+  }
+
+  private isLibraryWorldDir(worldDir: string): boolean {
+    const worldId = path.basename(worldDir);
+    return listLibraryWorlds().some((world) => world.id === worldId);
   }
 
   deleteTimeline(worldDir: string, timelineId: string, userId?: string): void {

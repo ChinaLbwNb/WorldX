@@ -1,0 +1,25 @@
+{
+  "worldId": "world_2026-04-19T17-12-41",
+  "sourceMapId": "map_origin",
+  "targetMapId": "map_1_0_mr4wd4od",
+  "targetName": "海边港口",
+  "targetDir": "C:\\Users\\admin\\Downloads\\WorldX-main\\WorldX-main\\library\\worlds\\world_2026-04-19T17-12-41\\maps\\map_1_0_mr4wd4od",
+  "styleReference": {
+    "sourceMapId": "map_origin",
+    "sourceName": "Post-Victory Pixel Hamlet",
+    "worldTheme": "Post-Victory Pixel Hamlet\nA pixel-art RPG village where residents are figuring out new life purpose after the hero saved the world and left. A grand stone statue of the hero stands in the central plaza, with every corner holding traces of the past adventure era.\nA pixel-art RPG village after the hero saved the world and left. The NPCs must figure out what to do with their lives now. Characters: a peddler who strolls around town every day with nothing left to sell, a healer with no patients sitting idle in her cottage, a blacksmith who spent years forging the hero's legendary sword but now makes spoons, a bard who only knows one song — \"The Ballad of the Hero\", a child who insists they are the next hero, a guard who keeps repeating \"Nothing to report\", and a philosophical village chief who ponders the meaning of a world already saved."
+  },
+  "generation": {
+    "userPrompt": "海边港口",
+    "prompt": "画面硬性限制：不要画任何文字、标题、标签、路牌字、箭头、图标、UI、水印、字幕、地图名、区域名或出生点标记。\n用户想生成的新地图：海边港口\n为同一个游戏世界生成一张新的独立本地地图，地图名参考为「海边港口」。\n它通过世界地图 UI 从「Post-Victory Pixel Hamlet」传送进入；不要表现成东南西北相邻区域，不要画拼接边界、入口箭头或传送门 UI。\n这是一张可以单独加载和游玩的俯视/轻横切像素风游戏地图，需要完整场景、清晰道路、可行走开阔区、建筑或功能区，以及少量可交互资源点。\n优先满足用户提示词，同时保持原世界的时代、题材、色调、建筑尺度、资源物件风格和游戏可读性一致。\n地图中央或主要道路附近保留一片自然的开阔可行走空地，适合玩家传送进入；不要用任何符号标出它。\n资源点要像自然物件或场景道具，不要做成带字的告示牌、菜单、铭牌或说明牌。\n避免人物大头像、重复旧图主体、纯装饰边框和无法通行的大面积封闭区域。\nUse English only in metadata. Do not render any written text inside the image.\n原世界参考：\nPost-Victory Pixel Hamlet\nA pixel-art RPG village where residents are figuring out new life purpose after the hero saved the world and left. A grand stone statue of the hero stands in the central plaza, with every corner holding traces of the past adventure era.\nA pixel-art RPG village after the hero saved the world and left. The NPCs must figure out what to do with their lives now. Characters: a peddler who strolls around town every day with nothing left to sell, a healer with no patients sitting idle in her cottage, a blacksmith who spent years forging the hero's legendary sword but now makes spoons, a bard who only knows one song — \"The Ballad of the Hero\", a child who insists they are the next hero, a guard who keeps repeating \"Nothing to report\", and a philosophical village chief who ponders the meaning of a world already saved.",
+    "model": "MaaS_Ge_2.5_flash_image_20251002",
+    "mapImageSize": "1"
+  },
+  "validationRules": {
+    "minWalkableRatio": 0.08,
+    "maxWalkableRatio": 0.85,
+    "requireDefaultSpawn": true,
+    "requireMainAreaPoint": true
+  },
+  "createdAt": "2026-07-03T12:15:58.678Z"
+}

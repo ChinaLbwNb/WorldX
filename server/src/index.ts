@@ -18,16 +18,21 @@ import simulationRoutes from "./api/routes/simulation.js";
 import godRoutes from "./api/routes/god.js";
 import sandboxChatRoutes from "./api/routes/sandbox-chat.js";
 import timelineRoutes from "./api/routes/timeline.js";
-import playerRoutes from "./api/routes/player.js";
 import authRoutes from "./api/routes/auth.js";
 import userRoutes from "./api/routes/users.js";
 import userCharacterRoutes from "./api/routes/user-characters.js";
+import userCharacterRuntimeRoutes from "./api/routes/user-character-runtime.js";
 import buildRoutes from "./api/routes/build.js";
 import itemRoutes from "./api/routes/items.js";
-import { canUserAccessWorld, findWorldById, resolveInitialWorldDir } from "./utils/world-directories.js";
+import actorInteractionRoutes from "./api/routes/actor-interactions.js";
+import taskRoutes from "./api/routes/tasks.js";
+import { canUserAccessWorld, findWorldById, listLibraryWorlds, resolveInitialWorldDir } from "./utils/world-directories.js";
 import { getAuthenticatedUser } from "./api/request-user.js";
 import { getAccountAssetsRoot } from "./utils/account-assets.js";
 import * as accountAssets from "./store/account-asset-store.js";
+import { getAuthDb } from "./store/auth-store.js";
+import { openDatabaseAt } from "./store/db.js";
+import * as userCharacterStore from "./store/user-character-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,7 +80,11 @@ function createAccountAssetHandler(): express.RequestHandler {
       return;
     }
     const user = getAuthenticatedUser(req);
-    if (!user || !accountAssets.userCanAccessAccountAsset(user.id, relativePath)) {
+    const canRead = user
+      ? accountAssets.userCanAccessAccountAsset(user.id, relativePath)
+        || canAccessSharedAccountAsset(user.id, relativePath)
+      : false;
+    if (!user || !canRead) {
       res.status(user ? 403 : 401).end();
       return;
     }
@@ -97,6 +106,81 @@ function createAccountAssetHandler(): express.RequestHandler {
       next(assetError);
     });
   };
+}
+
+type AssetPresence = { worldId: string; timelineId: string; currentMapId: string };
+
+function canAccessSharedAccountAsset(userId: string, assetPath: string): boolean {
+  const normalized = assetPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (normalized.startsWith("user-characters/")) {
+    return canAccessSharedUserCharacterAsset(userId, normalized);
+  }
+  if (normalized.startsWith("items/")) {
+    return canAccessSharedPlacedItemAsset(userId, normalized);
+  }
+  return false;
+}
+
+function canAccessSharedUserCharacterAsset(userId: string, assetPath: string): boolean {
+  const [, characterId] = assetPath.split("/");
+  if (!characterId) return false;
+  const presence = userCharacterStore.getUserCharacterPresence(characterId);
+  if (!presence) return false;
+  return userHasCharacterInPresence(userId, presence);
+}
+
+function canAccessSharedPlacedItemAsset(userId: string, assetPath: string): boolean {
+  const presences = listUserCharacterPresences(userId);
+  if (presences.length === 0) return false;
+  const likeNeedle = `%${assetPath.replace(/[%_]/g, "\\$&")}%`;
+  for (const presence of presences) {
+    const world = findWorldById(presence.worldId);
+    if (!world || !canUserAccessWorld(world, userId)) continue;
+    const dbPath = appContext.timelineManager.getTimelineDbPath(world.dir, presence.timelineId);
+    if (!fs.existsSync(dbPath)) continue;
+    const db = openDatabaseAt(dbPath);
+    try {
+      const row = db.prepare(
+        `SELECT 1 FROM map_item_placements
+         WHERE world_id = ?
+           AND timeline_id = ?
+           AND map_id = ?
+           AND state = 'placed'
+           AND metadata LIKE ? ESCAPE '\\'
+         LIMIT 1`,
+      ).get(presence.worldId, presence.timelineId, presence.currentMapId, likeNeedle);
+      if (row) return true;
+    } finally {
+      db.close();
+    }
+  }
+  return false;
+}
+
+function userHasCharacterInPresence(userId: string, presence: AssetPresence): boolean {
+  return listUserCharacterPresences(userId).some((candidate) => (
+    candidate.worldId === presence.worldId
+    && candidate.timelineId === presence.timelineId
+    && candidate.currentMapId === presence.currentMapId
+  ));
+}
+
+function listUserCharacterPresences(userId: string): AssetPresence[] {
+  const rows = getAuthDb()
+    .prepare(
+      `SELECT r.world_id, r.timeline_id, r.current_map_id
+       FROM account_user_characters c
+       JOIN account_user_character_presence r ON r.character_id = c.id
+       WHERE c.user_id = ?`,
+    )
+    .all(userId) as Array<{ world_id?: string; timeline_id?: string; current_map_id?: string }>;
+  return rows
+    .map((row) => ({
+      worldId: row.world_id ?? "",
+      timelineId: row.timeline_id ?? "",
+      currentMapId: row.current_map_id ?? "map_origin",
+    }))
+    .filter((presence) => presence.worldId && presence.timelineId && presence.currentMapId);
 }
 
 function createWorldMapAssetHandler(): express.RequestHandler {
@@ -231,16 +315,23 @@ function resolveWorldMapDir(worldDir: string, mapId: string): string {
   let mapDirName = mapId;
   try {
     const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
-      worldMaps?: Array<{ id?: string; mapDir?: string }>;
+      mapNodes?: Array<{ id?: string; mapDir?: string }>;
     };
-    const mapNode = Array.isArray(parsed.worldMaps)
-      ? parsed.worldMaps.find((map) => map.id === mapId)
+    const nodes = Array.isArray(parsed.mapNodes) ? parsed.mapNodes : [];
+    const mapNode = Array.isArray(nodes)
+      ? nodes.find((map) => map.id === mapId)
       : undefined;
     mapDirName = mapNode?.mapDir || mapId;
   } catch {
     mapDirName = mapId;
   }
-  return path.join(worldDir, "maps", mapDirName);
+  const mapDir = path.join(worldDir, "maps", mapDirName);
+  if (fs.existsSync(mapDir)) return mapDir;
+  if (mapId === "map_origin") {
+    const legacyMapDir = path.join(worldDir, "map");
+    if (fs.existsSync(legacyMapDir)) return legacyMapDir;
+  }
+  return mapDir;
 }
 
 async function main() {
@@ -257,26 +348,6 @@ async function main() {
 
   await appContext.initialize(worldDir);
   console.log("[WorldX] All systems initialized");
-
-  // 房间邀请码门禁：配置 ROOM_INVITE_CODE 后，所有 /api 请求（health 除外）
-  // 必须携带匹配的 x-room-code 头或 ?code= 查询参数，否则 403。
-  const requireInviteCode: express.RequestHandler = (req, res, next) => {
-    const inviteCode = (process.env.ROOM_INVITE_CODE ?? "").trim();
-    if (!inviteCode) {
-      next();
-      return;
-    }
-    const provided =
-      (typeof req.headers["x-room-code"] === "string"
-        ? (req.headers["x-room-code"] as string)
-        : ""
-      ).trim() || (typeof req.query.code === "string" ? req.query.code.trim() : "");
-    if (provided !== inviteCode) {
-      res.status(403).json({ error: "Invalid room invite code." });
-      return;
-    }
-    next();
-  };
 
   app.get("/api/health", (req, res) => {
     const user = getAuthenticatedUser(req);
@@ -297,10 +368,23 @@ async function main() {
     });
   });
 
-  // 邀请码门禁：作用于 health 之后的所有 /api 路由
-  app.use("/api", requireInviteCode);
-
   app.use("/api/auth", authRoutes);
+
+  app.get("/api/public/world-backgrounds", (_req, res) => {
+    const backgrounds = listLibraryWorlds()
+      .map((world) => {
+        const bgPath = path.join(world.dir, "maps", "map_origin", "06-background.png");
+        if (!fs.existsSync(bgPath)) return null;
+        return {
+          id: world.id,
+          worldName: world.worldName,
+          imageUrl: `/assets/worlds/${encodeURIComponent(world.id)}/maps/map_origin/06-background.png`,
+        };
+      })
+      .filter((item): item is { id: string; worldName: string; imageUrl: string } => Boolean(item))
+      .slice(0, 8);
+    res.json({ backgrounds });
+  });
 
   const requireAuth: express.RequestHandler = (req, res, next) => {
     const user = getAuthenticatedUser(req);
@@ -337,6 +421,7 @@ async function main() {
   };
 
   app.use("/api/world", worldRoutes);
+  app.use("/api/tasks", taskRoutes);
   app.use("/api/characters", requireWorld, characterRoutes);
   app.use("/api/events", requireWorld, eventsRoutes);
   app.use("/api/content", requireWorld, createPublicContentRouter());
@@ -346,9 +431,13 @@ async function main() {
   app.use("/api/timelines", timelineRoutes);
   app.use("/api/users", requireWorld, userRoutes);
   app.use("/api/user-characters", requireWorld, userCharacterRoutes);
-  app.use("/api/player", requireWorld, playerRoutes);
+  app.use("/api/user-character-runtime", requireWorld, userCharacterRuntimeRoutes);
   app.use("/api/build", requireWorld, buildRoutes);
   app.use("/api/items", requireWorld, itemRoutes);
+  app.use("/api/actor-interactions", requireWorld, actorInteractionRoutes);
+  app.use("/api", (req, res) => {
+    res.status(404).json({ error: `API route not found: ${req.method} ${req.path}` });
+  });
 
   app.use("/assets/worlds", createWorldScopedAssetHandler());
   app.use("/assets/maps", createWorldMapAssetHandler());
@@ -365,6 +454,9 @@ async function main() {
   }
 
   const server = createServer(app);
+  server.requestTimeout = Number(process.env.HTTP_REQUEST_TIMEOUT_MS || 600_000);
+  server.headersTimeout = Number(process.env.HTTP_HEADERS_TIMEOUT_MS || 610_000);
+  server.keepAliveTimeout = Number(process.env.HTTP_KEEP_ALIVE_TIMEOUT_MS || 65_000);
   setupWebSocket(server, appContext);
 
   const PORT = process.env.PORT || 3100;

@@ -22,7 +22,12 @@ const WORLD_SEED_ROOT = resolve(PROJECT_ROOT, "../..");
 
 dotenv.config({ path: resolve(WORLD_SEED_ROOT, ".env") });
 
-const CHARACTERS_DIR = process.env.CHAR_OUTPUT_DIR || resolve(WORLD_SEED_ROOT, "output/characters");
+function resolveDataDir() {
+  const configured = process.env.WORLDX_DATA_DIR?.trim();
+  return configured ? resolve(WORLD_SEED_ROOT, configured) : resolve(WORLD_SEED_ROOT, "output");
+}
+
+const CHARACTERS_DIR = process.env.CHAR_OUTPUT_DIR || resolve(resolveDataDir(), "characters");
 const CHARACTERS_JSON = join(CHARACTERS_DIR, "characters.json");
 
 installPhaseStepLogPrefix("Phase 3");

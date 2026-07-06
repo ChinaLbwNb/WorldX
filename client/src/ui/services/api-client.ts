@@ -15,7 +15,7 @@ import type {
   TimelineFrame,
   BuildState,
   BuildJobStatus,
-  WorldMapsState,
+  MapNodesState,
 } from "../../types/api";
 
 const API_BASE = "/api";
@@ -34,12 +34,7 @@ async function requestJSON<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  // 附带房间邀请码（与 WS 握手共用同一 localStorage 值），用于服务端 HTTP 门禁校验
-  const code =
-    typeof localStorage !== "undefined"
-      ? localStorage.getItem("worldx_invite_code") ?? ""
-      : "";
-  const headers = { ...(init?.headers ?? {}), "x-room-code": code, "x-user-id": getStoredUserId() };
+  const headers = { ...(init?.headers ?? {}), "x-user-id": getStoredUserId() };
   const token =
     typeof localStorage !== "undefined"
       ? localStorage.getItem(LS_AUTH_TOKEN) ?? ""
@@ -63,6 +58,12 @@ async function requestJSON<T>(
 
 function fetchJSON<T>(path: string): Promise<T> {
   return requestJSON(path);
+}
+
+function withUserCharacterQuery(path: string, userCharacterId?: string): string {
+  if (!userCharacterId) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}userCharacterId=${encodeURIComponent(userCharacterId)}`;
 }
 
 function postJSON<T>(path: string, body?: unknown): Promise<T> {
@@ -114,6 +115,7 @@ export interface GeneratedWorldSummary {
   ownerUserId?: string;
   visibility?: "private" | "unlisted" | "public";
   canManage?: boolean;
+  role?: "owner" | "admin" | "builder" | "viewer" | "public" | null;
   isCurrent: boolean;
   timelineCount?: number;
 }
@@ -144,6 +146,14 @@ export interface OnlinePlayersResponse {
   activeMapId: string;
   canManage: boolean;
   players: OnlinePlayerInfo[];
+  allPlayers?: OnlinePlayerInfo[];
+}
+
+export interface WorldMemberInfo {
+  userId: string;
+  role: "admin" | "builder" | "viewer";
+  invitedByUserId: string | null;
+  createdAt: string;
 }
 
 export interface UserCharacterInfo {
@@ -208,6 +218,88 @@ export interface InventoryItemInfo {
   metadata: Record<string, unknown>;
 }
 
+export type TutorialTaskEventType =
+  | "enter_world"
+  | "collect_resource"
+  | "talk_to_npc"
+  | "generate_item"
+  | "place_item"
+  | "run_tick"
+  | "generate_map_node";
+
+export type TaskScopeType = "account" | "world" | "timeline" | "map";
+
+export type TaskObjectiveKind =
+  | "event_count"
+  | "visit_world"
+  | "collect_resource"
+  | "talk_to_npc"
+  | "generate_item"
+  | "place_item"
+  | "run_tick"
+  | "generate_map_node";
+
+export type TaskRewardKind =
+  | "resource"
+  | "item_definition"
+  | "unlock_feature"
+  | "world_flag"
+  | "relationship_delta"
+  | "none";
+
+export interface TaskTargetInfo {
+  worldId?: string;
+  timelineId?: string;
+  mapId?: string;
+  npcId?: string;
+  itemCategory?: string;
+  resourceType?: string;
+  featureId?: string;
+  flagKey?: string;
+}
+
+export interface TutorialObjectiveInfo {
+  id: string;
+  kind: TaskObjectiveKind;
+  eventType: TutorialTaskEventType;
+  label: string;
+  description: string;
+  requiredCount: number;
+  currentCount: number;
+  completed: boolean;
+  completedAt: string | null;
+  target?: TaskTargetInfo;
+  rewards: TaskRewardInfo[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskRewardInfo {
+  id: string;
+  kind: TaskRewardKind;
+  label: string;
+  quantity?: number;
+  target?: TaskTargetInfo;
+  metadata?: Record<string, unknown>;
+  claimMode: "auto" | "manual" | "none";
+  claimed: boolean;
+  claimedAt: string | null;
+}
+
+export interface TutorialTaskInfo {
+  id: string;
+  scopeType: TaskScopeType;
+  title: string;
+  description: string;
+  status: "active" | "completed";
+  progress: {
+    completed: number;
+    total: number;
+    percent: number;
+  };
+  objectives: TutorialObjectiveInfo[];
+  rewards: TaskRewardInfo[];
+}
+
 export interface MapItemPlacementInfo {
   id: string;
   itemInstanceId: string;
@@ -222,6 +314,23 @@ export interface MapItemPlacementInfo {
   state: string;
   placedBy: { ownerType: string; ownerId: string } | null;
   metadata: Record<string, unknown>;
+}
+
+export interface ItemTransferInfo {
+  id: string;
+  userId: string;
+  worldId: string;
+  timelineId: string;
+  mapId: string;
+  itemInstanceId: string;
+  quantity: number;
+  fromOwner: { ownerType: string; ownerId: string } | null;
+  toOwner: { ownerType: string; ownerId: string } | null;
+  kind: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  item: InventoryItemInfo | null;
 }
 
 export type CreateJobSizeK = 1 | 2 | 4;
@@ -262,28 +371,28 @@ export class JobConflictError extends Error {
 }
 
 export const apiClient = {
-  getWorldTime(): Promise<WorldTimeInfo> {
-    return fetchJSON("/world/time");
+  getWorldTime(userCharacterId?: string): Promise<WorldTimeInfo> {
+    return fetchJSON(withUserCharacterQuery("/world/time", userCharacterId));
   },
 
-  getWorldInfo(): Promise<WorldInfo> {
-    return fetchJSON("/world/info");
+  getWorldInfo(userCharacterId?: string): Promise<WorldInfo> {
+    return fetchJSON(withUserCharacterQuery("/world/info", userCharacterId));
   },
 
-  getGeneratedWorlds(): Promise<GeneratedWorldListResponse> {
-    return fetchJSON("/world/worlds");
+  getGeneratedWorlds(userCharacterId?: string): Promise<GeneratedWorldListResponse> {
+    return fetchJSON(withUserCharacterQuery("/world/worlds", userCharacterId));
   },
 
-  getLocations(): Promise<LocationInfo[]> {
-    return fetchJSON("/world/locations");
+  getLocations(userCharacterId?: string): Promise<LocationInfo[]> {
+    return fetchJSON(withUserCharacterQuery("/world/locations", userCharacterId));
   },
 
-  getCharacters(): Promise<CharacterInfo[]> {
-    return fetchJSON("/characters");
+  getCharacters(userCharacterId?: string): Promise<CharacterInfo[]> {
+    return fetchJSON(withUserCharacterQuery("/characters", userCharacterId));
   },
 
-  getCharacterDetail(id: string): Promise<CharacterDetail> {
-    return fetchJSON(`/characters/${id}`);
+  getCharacterDetail(id: string, userCharacterId?: string): Promise<CharacterDetail> {
+    return fetchJSON(withUserCharacterQuery(`/characters/${id}`, userCharacterId));
   },
 
 
@@ -328,6 +437,7 @@ export const apiClient = {
   simulateTick(context: {
     worldId: string;
     timelineId: string;
+    userCharacterId?: string;
   }): Promise<{
     ok: boolean;
     gameTime: WorldTimeInfo;
@@ -389,6 +499,7 @@ export const apiClient = {
   sandboxChatStart(params: {
     characterId: string;
     userIdentity?: string;
+    userCharacterId?: string;
   }): Promise<{
     ok: boolean;
     sessionId: string;
@@ -412,6 +523,10 @@ export const apiClient = {
     ok: boolean;
     sessionId: string;
     characterId: string;
+    userCharacterId?: string;
+    worldId?: string;
+    timelineId?: string;
+    mapId?: string;
     userIdentity: string;
     history: Array<{ role: "user" | "character"; content: string }>;
   }> {
@@ -523,45 +638,91 @@ export const apiClient = {
     return patchJSON(`/world/worlds/${encodeURIComponent(worldId)}`, { visibility });
   },
 
-  getOnlinePlayers(): Promise<OnlinePlayersResponse> {
-    return fetchJSON("/world/online");
+  getWorldMembers(worldId: string): Promise<{ worldId: string; members: WorldMemberInfo[] }> {
+    return fetchJSON(`/world/worlds/${encodeURIComponent(worldId)}/members`);
+  },
+
+  addWorldMember(
+    worldId: string,
+    userId: string,
+    role: "admin" | "builder" | "viewer" = "viewer",
+  ): Promise<{ ok: boolean; worldId: string; member: { userId: string; role: string } }> {
+    return postJSON(`/world/worlds/${encodeURIComponent(worldId)}/members`, { userId, role });
+  },
+
+  removeWorldMember(worldId: string, userId: string): Promise<{ ok: boolean; worldId: string; removedUserId: string }> {
+    return deleteJSON(`/world/worlds/${encodeURIComponent(worldId)}/members/${encodeURIComponent(userId)}`);
+  },
+
+  getOnlinePlayers(userCharacterId?: string): Promise<OnlinePlayersResponse> {
+    const query = userCharacterId ? `?userCharacterId=${encodeURIComponent(userCharacterId)}` : "";
+    return fetchJSON(`/world/online${query}`);
   },
 
   kickOnlinePlayer(playerId: string): Promise<{ ok: boolean; playerId: string }> {
     return postJSON("/world/online/kick", { playerId });
   },
 
+  inviteOnlinePlayer(input: {
+    userCharacterId: string;
+    targetPlayerId: string;
+    role?: "admin" | "builder" | "viewer";
+  }): Promise<{ ok: boolean; inviteId: string; targetPlayerId: string; expiresAt: number }> {
+    return postJSON("/world/online/invite", input);
+  },
+
+  respondWorldInvite(input: {
+    inviteId: string;
+    accepted: boolean;
+    userCharacterId?: string;
+  }): Promise<{ ok: boolean; accepted: boolean; worldId?: string; worldName?: string; role?: string }> {
+    return postJSON(`/world/online/invites/${encodeURIComponent(input.inviteId)}/respond`, {
+      accepted: input.accepted,
+      userCharacterId: input.userCharacterId,
+    });
+  },
+
   // --- Timeline APIs ---
 
-  getTimelines(): Promise<{ timelines: TimelineMeta[]; currentTimelineId: string | null }> {
-    return fetchJSON("/timelines");
+  getTimelines(userCharacterId?: string): Promise<{ timelines: TimelineMeta[]; currentTimelineId: string | null; worldId?: string }> {
+    const query = userCharacterId ? `?userCharacterId=${encodeURIComponent(userCharacterId)}` : "";
+    return fetchJSON(`/timelines${query}`);
   },
 
-  getCurrentTimeline(): Promise<{ timeline: TimelineMeta }> {
-    return fetchJSON("/timelines/current");
+  getCurrentTimeline(userCharacterId?: string): Promise<{ timeline: TimelineMeta }> {
+    const query = userCharacterId ? `?userCharacterId=${encodeURIComponent(userCharacterId)}` : "";
+    return fetchJSON(`/timelines/current${query}`);
   },
 
-  createNewTimeline(): Promise<{ ok: boolean; timelineId: string }> {
-    return postJSON("/timelines");
+  createNewTimeline(userCharacterId?: string): Promise<{ ok: boolean; timelineId: string; worldId?: string }> {
+    return postJSON("/timelines", userCharacterId ? { userCharacterId } : {});
   },
 
-  loadTimeline(timelineId: string): Promise<{ ok: boolean }> {
-    return postJSON(`/timelines/${encodeURIComponent(timelineId)}/load`);
+  loadTimeline(timelineId: string, userCharacterId?: string): Promise<{
+    ok: boolean;
+    timelineId?: string;
+    character?: UserCharacterInfo | null;
+    presence?: { worldId: string; timelineId: string; currentMapId: string } | null;
+  }> {
+    return postJSON(`/timelines/${encodeURIComponent(timelineId)}/load`, userCharacterId ? { userCharacterId } : {});
   },
 
-  deleteTimeline(timelineId: string): Promise<{ ok: boolean }> {
-    return deleteJSON(`/timelines/${encodeURIComponent(timelineId)}`);
+  deleteTimeline(timelineId: string, userCharacterId?: string): Promise<{ ok: boolean }> {
+    const query = userCharacterId ? `?userCharacterId=${encodeURIComponent(userCharacterId)}` : "";
+    return deleteJSON(`/timelines/${encodeURIComponent(timelineId)}${query}`);
   },
 
-  getTimelineEvents(timelineId: string): Promise<{ frames: TimelineFrame[] }> {
-    return fetchJSON(`/timelines/${encodeURIComponent(timelineId)}/events`);
+  getTimelineEvents(timelineId: string, userCharacterId?: string): Promise<{ frames: TimelineFrame[] }> {
+    const query = userCharacterId ? `?userCharacterId=${encodeURIComponent(userCharacterId)}` : "";
+    return fetchJSON(`/timelines/${encodeURIComponent(timelineId)}/events${query}`);
   },
 
-  getAllTimelinesGrouped(): Promise<{
+  getAllTimelinesGrouped(userCharacterId?: string): Promise<{
     groups: TimelineWithWorld[];
     currentTimelineId: string | null;
   }> {
-    return fetchJSON("/timelines/all");
+    const query = userCharacterId ? `?userCharacterId=${encodeURIComponent(userCharacterId)}` : "";
+    return fetchJSON(`/timelines/all${query}`);
   },
 
   deleteTimelineFromWorld(
@@ -573,9 +734,9 @@ export const apiClient = {
     );
   },
 
-  // --- Player APIs ---
+  // --- User character runtime APIs ---
 
-  getPlayerAvatar(): Promise<{
+  getUserCharacterRuntimeAvatar(userCharacterId: string): Promise<{
     id: string;
     name: string;
     mode: "avatar" | "god";
@@ -590,28 +751,21 @@ export const apiClient = {
     appearance: UserCharacterInfo["appearance"];
     inventory: Array<{ itemId: string; name: string; quantity: number }>;
   }> {
-    return fetchJSON("/player/avatar");
+    return fetchJSON(`/user-character-runtime/avatar?userCharacterId=${encodeURIComponent(userCharacterId)}`);
   },
 
-  updatePlayerPosition(params: {
+  updateUserCharacterPosition(params: {
+    userCharacterId: string;
     x: number;
     y: number;
     location: string;
     mainAreaPointId: string | null;
   }): Promise<{ ok: boolean }> {
-    return postJSON("/player/avatar/move", params);
+    return postJSON("/user-character-runtime/avatar/move", params);
   },
 
-  setPlayerMode(playerId: string, mode: "avatar" | "god"): Promise<{ ok: boolean }> {
-    return postJSON("/player/mode", { playerId, mode });
-  },
-
-  playerInteract(playerId: string, params: {
-    actionType: string;
-    targetId: string;
-    interactionId?: string;
-  }): Promise<{ ok: boolean; action: { actionType: string; targetId: string; interactionId?: string; startTick: number; endTick: number } }> {
-    return postJSON("/player/avatar/interact", { playerId, ...params });
+  setUserCharacterMode(userCharacterId: string, mode: "avatar" | "god"): Promise<{ ok: boolean }> {
+    return postJSON("/user-character-runtime/mode", { userCharacterId, mode });
   },
 
   // --- User character APIs ---
@@ -655,7 +809,20 @@ export const apiClient = {
     return patchJSON(`/users/${encodeURIComponent(userId)}`, { displayName });
   },
 
-  deleteUser(userId: string): Promise<{ ok: boolean; deletedUserId: string }> {
+  deleteUser(userId: string): Promise<{
+    ok: boolean;
+    result: {
+      deletedUserId: string;
+      deletedCharacters: number;
+      deletedItemInstances: number;
+      deletedWorldAssets: number;
+      deletedWorldDirectories: string[];
+      preservedActiveWorlds: string[];
+      deletedTimelineAssets: number;
+      removedAssetDirs: string[];
+      cleanedTimelineDbs: number;
+    };
+  }> {
     return deleteJSON(`/users/${encodeURIComponent(userId)}`);
   },
 
@@ -666,7 +833,7 @@ export const apiClient = {
   createUserCharacter(
     name: string,
     options?: { prompt?: string; generateAppearance?: boolean },
-  ): Promise<{ character: UserCharacterInfo }> {
+  ): Promise<{ character: UserCharacterInfo; cost?: number; resources?: number }> {
     return postJSON("/user-characters", {
       name,
       prompt: options?.prompt ?? name,
@@ -697,6 +864,70 @@ export const apiClient = {
     return fetchJSON("/items/inventory");
   },
 
+  getItemTransfers(status: "requested" | "completed" | "cancelled" | "failed" = "requested"): Promise<{
+    userId: string;
+    status: string;
+    incoming: ItemTransferInfo[];
+    outgoing: ItemTransferInfo[];
+  }> {
+    return fetchJSON(`/items/transfers?status=${encodeURIComponent(status)}`);
+  },
+
+  requestItemTransfer(params: {
+    userCharacterId: string;
+    entryId: string;
+    targetUserId: string;
+  }): Promise<{
+    ok: boolean;
+    scope: { worldId: string; timelineId: string; mapId: string };
+    transfer: ItemTransferInfo;
+  }> {
+    return postJSON("/items/transfer/request", params);
+  },
+
+  requestItemTrade(params: {
+    userCharacterId: string;
+    offerEntryId: string;
+    targetUserId: string;
+    requestedEntryId: string;
+  }): Promise<{
+    ok: boolean;
+    scope: { worldId: string; timelineId: string; mapId: string };
+    transfer: ItemTransferInfo;
+  }> {
+    return postJSON("/items/trade/request", params);
+  },
+
+  getTradeCandidates(params: {
+    userCharacterId: string;
+    targetUserId: string;
+  }): Promise<{
+    scope: { worldId: string; timelineId: string; mapId: string };
+    targetUserId: string;
+    items: InventoryItemInfo[];
+  }> {
+    const search = new URLSearchParams();
+    search.set("userCharacterId", params.userCharacterId);
+    search.set("targetUserId", params.targetUserId);
+    return fetchJSON(`/items/trade/candidates?${search.toString()}`);
+  },
+
+  respondItemTransfer(transferId: string, accept: boolean): Promise<{
+    ok: boolean;
+    scope: { worldId: string; timelineId: string; mapId: string };
+    transfer: ItemTransferInfo;
+  }> {
+    return postJSON(`/items/transfer/${encodeURIComponent(transferId)}/respond`, { accept });
+  },
+
+  cancelItemTransfer(transferId: string): Promise<{
+    ok: boolean;
+    scope: { worldId: string; timelineId: string; mapId: string };
+    transfer: ItemTransferInfo;
+  }> {
+    return postJSON(`/items/transfer/${encodeURIComponent(transferId)}/cancel`);
+  },
+
   placeInventoryItem(params: {
     userCharacterId: string;
     entryId: string;
@@ -704,6 +935,7 @@ export const apiClient = {
     y: number;
     rotation?: number;
     footprintTiles?: { width: number; height: number };
+    visualScale?: number;
   }): Promise<{
     ok: boolean;
     scope: { worldId: string; timelineId: string; mapId: string };
@@ -727,11 +959,14 @@ export const apiClient = {
     return postJSON("/items/generate", params);
   },
 
-  getMapItemPlacements(mapId?: string): Promise<{
+  getMapItemPlacements(params?: { mapId?: string; userCharacterId?: string }): Promise<{
     scope: { worldId: string; timelineId: string; mapId: string };
     placements: MapItemPlacementInfo[];
   }> {
-    const suffix = mapId ? `?mapId=${encodeURIComponent(mapId)}` : "";
+    const search = new URLSearchParams();
+    if (params?.mapId) search.set("mapId", params.mapId);
+    if (params?.userCharacterId) search.set("userCharacterId", params.userCharacterId);
+    const suffix = search.toString() ? `?${search.toString()}` : "";
     return fetchJSON(`/items/placements${suffix}`);
   },
 
@@ -759,6 +994,30 @@ export const apiClient = {
     return postJSON("/items/delete", params);
   },
 
+  dropInventoryItem(params: {
+    userCharacterId: string;
+    entryId: string;
+  }): Promise<{
+    ok: boolean;
+    scope: { worldId: string; timelineId: string; mapId: string };
+    kind: "drop";
+    item: InventoryItemInfo;
+  }> {
+    return postJSON("/items/drop", params);
+  },
+
+  useInventoryItem(params: {
+    userCharacterId: string;
+    entryId: string;
+  }): Promise<{
+    ok: boolean;
+    scope: { worldId: string; timelineId: string; mapId: string };
+    kind: "use";
+    item: InventoryItemInfo;
+  }> {
+    return postJSON("/items/use", params);
+  },
+
   enterMapWithUserCharacter(
     userCharacterId: string,
     mapId: string,
@@ -768,8 +1027,11 @@ export const apiClient = {
 
   selectUserCharacter(
     userCharacterId: string,
+    sourceUserCharacterId?: string,
   ): Promise<{ ok: boolean; character: UserCharacterInfo; requiresReload: boolean }> {
-    return postJSON(`/user-characters/${encodeURIComponent(userCharacterId)}/select`);
+    return postJSON(`/user-characters/${encodeURIComponent(userCharacterId)}/select`, {
+      sourceUserCharacterId,
+    });
   },
 
   enterWorldWithUserCharacter(
@@ -786,18 +1048,31 @@ export const apiClient = {
     return postJSON("/world/enter", { userCharacterId, worldId });
   },
 
+  getTutorialTask(): Promise<{ userId: string; task: TutorialTaskInfo }> {
+    return fetchJSON("/tasks/tutorial");
+  },
+
+  reportTutorialTaskEvent(
+    eventType: TutorialTaskEventType,
+    count = 1,
+  ): Promise<{ userId: string; task: TutorialTaskInfo }> {
+    return postJSON("/tasks/tutorial/progress", { eventType, count });
+  },
+
+  resetTutorialTask(): Promise<{ userId: string; task: TutorialTaskInfo }> {
+    return postJSON("/tasks/tutorial/reset");
+  },
+
   // --- 建造系统 API（资源为联机全局共享池）---
 
-  getBuildState(): Promise<BuildState> {
-    return fetchJSON("/build/state");
+  getBuildState(userCharacterId?: string): Promise<BuildState> {
+    const query = userCharacterId ? `?userCharacterId=${encodeURIComponent(userCharacterId)}` : "";
+    return fetchJSON(`/build/state${query}`);
   },
 
-  getWorldMaps(): Promise<WorldMapsState> {
-    return fetchJSON("/world/maps");
-  },
-
-  travelToMap(targetMapId: string): Promise<{ activeMapId: string; targetMapId: string; spawn: { x: number; y: number }; requiresReload: boolean }> {
-    return postJSON("/world/map/travel", { targetMapId });
+  getMapNodes(userCharacterId?: string): Promise<MapNodesState> {
+    const query = userCharacterId ? `?userCharacterId=${encodeURIComponent(userCharacterId)}` : "";
+    return fetchJSON(`/world/maps${query}`);
   },
 
   collectResource(
@@ -813,15 +1088,15 @@ export const apiClient = {
     return postJSON("/build/collect", { objectId, userCharacterId });
   },
 
-  buildCharacter(prompt: string): Promise<{ ok: boolean; jobId: string }> {
-    return postJSON("/build/character", { prompt });
+  buildCharacter(prompt: string, userCharacterId: string): Promise<{ ok: boolean; jobId: string }> {
+    return postJSON("/build/character", { prompt, userCharacterId });
   },
 
   getCharacterBuildJob(jobId: string): Promise<BuildJobStatus> {
     return fetchJSON(`/build/character/jobs/${encodeURIComponent(jobId)}`);
   },
 
-  generateMapNode(input: { prompt: string }): Promise<{ ok: boolean; jobId: string }> {
+  generateMapNode(input: { prompt: string; userCharacterId: string }): Promise<{ ok: boolean; jobId: string }> {
     return postJSON("/build/map/expand", input);
   },
 

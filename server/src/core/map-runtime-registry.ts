@@ -58,6 +58,13 @@ export class MapRuntimeRegistry {
     return record ? this.toSnapshot(record) : null;
   }
 
+  getRuntimeWithResources(scope: PresenceScope): (MapRuntimeSnapshot & { resourceNodes: ResourceNodeConfig[] }) | null {
+    const record = this.runtimes.get(scopeKey(scope));
+    return record
+      ? { ...this.toSnapshot(record), resourceNodes: [...record.resourceNodes] }
+      : null;
+  }
+
   getResourceNode(scope: PresenceScope, objectId: string): ResourceNodeConfig | null {
     const record = this.runtimes.get(scopeKey(scope));
     return record?.resourceNodes.find((node) => node.id === objectId) ?? null;

@@ -32,7 +32,7 @@ NPC 继续作为世界模拟对象存在，由 AI 决策、记忆、需求和时
 - `默认男角色`
 - `默认女角色`
 
-这两个默认角色不走 AI 生图管线，避免注册时产生等待和资源消耗。它们创建后就是该账号名下的普通固定角色资产，可以进入地图、切换、改名或在满足保护规则时删除。登录、`GET /api/user-characters` 和进入地图页不会再临时补角色；如果旧账号缺少角色，应走显式迁移或管理工具补齐，而不是由查询接口隐式写入。
+这两个默认角色不走 AI 生图管线，避免注册时产生等待和资源消耗。它们创建后就是该账号名下的普通固定用户角色资产，可以进入地图、切换、改名或在满足保护规则时删除。登录、`GET /api/user-characters` 和进入地图页不会再临时补角色；如果旧账号缺少角色，应走显式迁移或管理工具补齐，而不是由查询接口隐式写入。
 
 ### UserCharacter
 
@@ -55,6 +55,8 @@ NPC 继续作为世界模拟对象存在，由 AI 决策、记忆、需求和时
 - `diary_entries`
 
 NPC 参与 simulation tick，由 LLM/规则驱动行动、对话、记忆和情绪。NPC 不属于某个用户账户，不使用 `user_characters`。
+
+NPC 可以由世界初始生成管线创建，也可以由建造面板“生成 NPC”创建。建造面板入口对应 `/api/build/character`，只写当前世界的 NPC 配置和素材，不写账号用户角色表，也不会出现在“我的角色”面板。
 
 ### ActorRef
 
@@ -157,7 +159,7 @@ display_name = 本地用户
 后续联机不应理解为“所有人自动在同一个世界”。正确模型是：
 
 - 用户默认在自己的世界中创建角色、生成物品、生成地图。
-- 访问他人世界需要对方世界开放、分享链接、邀请码或成员授权。
+- 访问他人世界需要对方通过在线玩家列表发起实时邀请，或已有成员授权。
 - 进入他人世界后，用户仍使用自己的账号身份，但角色运行态会绑定到目标世界、时间线和地图。
 
 ### user_characters
@@ -265,7 +267,7 @@ updated_at
 
 ### GET /api/users
 
-返回当前时间线 DB 内已知的用户投影列表，主要用于兼容和本地调试；真实账号主数据在 `output/auth.db`。每个用户包含：
+返回当前登录账号的账号视图；真实账号主数据在 `output/auth.db`。每个用户包含：
 
 ```ts
 {
@@ -279,32 +281,27 @@ updated_at
 
 ### GET /api/users/me
 
-根据 session token 或兼容 `x-user-id` 返回当前用户账户。若当前世界 DB 内没有该用户投影，会创建一个同 ID 的占位。
+根据 session token 返回当前用户账户。
 
 ### POST /api/users
 
-请求体：
-
-```ts
-{
-  displayName: string;
-  userId?: string;
-}
-```
-
-创建一个当前世界 DB 内的用户投影。真实账号创建应使用 `/api/auth/register`；该接口主要保留给兼容工具和本地调试。
+已停止使用，返回 `410`。真实账号创建统一使用 `/api/auth/register`。
 
 ### PATCH /api/users/:id
 
-修改本地用户显示名称。当前只允许改 `displayName`。
+修改当前账号显示名称。当前只允许账号本人修改自己的 `displayName`。
 
 ### DELETE /api/users/:id
 
-删除本地用户账户。保护规则：
+删除当前真实账号。当前策略是“自删除 + 级联清理”：
 
-- `local_user` 不能删除。
-- 该用户仍有用户角色时不能删除。
-- 删除真实账户时，未来应改为认证系统内的禁用/注销流程，而不是直接从时间线 DB 移除。
+- 只允许删除当前登录账号。
+- 删除 `auth_sessions/account_resources/account_user_characters/account_user_character_presence`。
+- 删除账号名下物品定义、物品实例、背包条目和物品转移记录。
+- 删除账号世界资产索引和时间线资产索引。
+- 清理所有 timeline DB 中该账号用户角色的 `player_avatar` 兼容镜像。
+- 该账号已摆放的地图物品标记为 `removed`，避免其他玩家继续看到或拾取。
+- 非当前运行中的账号世界目录会被删除；当前正在加载的世界目录会保留，避免运行时中断。
 
 ### GET /api/user-characters
 
@@ -352,7 +349,7 @@ updated_at
 - 角色在线时不能删除。
 - 角色背包不为空时不能删除。
 - 角色仍有已摆放在地图上的物品时不能删除。
-- 删除成功会清理 `user_characters/user_character_runtime/player_avatar` 兼容镜像，并删除 `user-characters/<userCharacterId>/` 下的素材目录。
+- 删除成功会清理 `user_characters/user_character_runtime/player_avatar` 兼容镜像，并删除账号级 `output/account-assets/user-characters/<userCharacterId>/` 下的素材目录。
 
 ### POST /api/world/map/enter
 
@@ -386,30 +383,25 @@ updated_at
 
 已按 `PresenceScope` 隔离的事件：
 
-- `players_online`
-- `player_joined`
-- `player_left`
-- `player_moved`
-- `player_mode_changed`
-- `player_chat`
-- `npc_typing`
-- `npc_chat`
-- `npc_chat_error`
-
-服务端已新增 `MapRuntimeRegistry` 作为房间运行态索引。它按 `PresenceScope` 记录当前 scope、在线用户角色 ID、地图资源节点缓存是否就绪和最近活跃时间。`GET /api/world/maps` 和 `GET /api/build/state` 会返回 `mapRuntimes`，供后续地图 UI、背包、物品摆放和多人房间调试使用。
-
-命名仍保留旧 `player_*`，但语义已经是用户角色。后续建议新增并逐步迁移到：
-
+- `user_characters_online`
 - `user_character_joined`
 - `user_character_left`
 - `user_character_moved`
-- `user_character_action_started`
-- `actor_interaction_started`
-- `actor_interaction_updated`
-- `item_picked_up`
-- `item_placed`
+- `user_character_mode_changed`
+- `user_character_chat`
+- `npc_typing`
+- `npc_chat`
+- `npc_chat_error`
+- `map_item_placed`
+- `map_item_picked_up`
 - `item_transfer_requested`
 - `item_transfer_completed`
+- `item_transfer_cancelled`
+
+服务端已新增 `MapRuntimeRegistry` 作为房间运行态索引。它按 `PresenceScope` 记录当前 scope、在线用户角色 ID、地图资源节点缓存是否就绪和最近活跃时间。`GET /api/world/maps` 和 `GET /api/build/state` 会返回 `mapRuntimes`，供后续地图 UI、背包、物品摆放和多人房间调试使用。
+
+服务端和前端主路径已迁到 `user_character_*` WebSocket 事件名；运行时源码不再接收旧 `player_*` 消息名。
+- 双向 `item_transfer_requested/item_transfer_completed` 交易确认流；当前已实现账号到账号的单向赠送请求，以及同 `PresenceScope` 内账号物品双向交换报价。交易接受时服务端会事务性互换双方物品归属，任一报价物品已被移动则失败。
 
 广播规则：
 
@@ -447,17 +439,17 @@ updated_at
 
 后续 UI 应新增：
 
-- 背包面板：展示 `inventory_entries`，后续增加使用、丢弃、交换和摆放动作。
+- 背包面板：展示 `inventory_entries`，支持丢弃、交换和摆放动作；特殊物品再按 `metadata.usable=true` 开启使用。
 - 交换面板：同 scope 用户角色之间交换物品。
 - 地图物品交互：拾取、摆放、查看。
 - 角色交互菜单：对 NPC 或其他用户角色发起聊天、赠送、交易、协作等。
 
-当前 `UserCharactersPanel` 已接入用户角色素材生成：创建角色时把用户输入作为提示词，后端复用 `generators/character` 的 spritesheet 生成、绿幕裁切和 metadata 管线，生成临时 `char_*` 产物后复制到当前世界的 `user-characters/<userCharacterId>/` 目录，并把 `appearance.spriteKey/spriteUrl/assetStatus/prompt/sourceCharId` 写回用户角色。
+当前 `UserCharactersPanel` 已接入用户角色素材生成：创建角色时把用户输入作为提示词，后端复用 `generators/character` 的 spritesheet 生成、绿幕裁切和 metadata 管线，生成临时 `char_*` 产物后复制到账号级资产目录，并把 `appearance.spriteKey/spriteUrl/assetStatus/prompt/sourceCharId` 写回账号用户角色。
 
 用户角色素材与 NPC 素材分开存放：
 
 - NPC：`characters/<npcId>/spritesheet.png`，通过 `/assets/characters/<npcId>/spritesheet.png` 访问。
-- 用户角色：`user-characters/<userCharacterId>/spritesheet.png`，通过 `/assets/user-characters/<userCharacterId>/spritesheet.png` 访问。
+- 用户角色：`output/account-assets/user-characters/<userCharacterId>/spritesheet.png`，通过 `/assets/account/user-characters/<userCharacterId>/spritesheet.png` 访问。
 
 前端渲染规则：
 
@@ -509,7 +501,7 @@ NPC：
 
 ## 资源、背包和物品边界
 
-资源系统是世界内的通用货币/能量账户，用于角色生成、地图生成、物品生成等付费行为。采集请求携带 `userCharacterId` 时，服务端只用它校验该角色所在 `PresenceScope` 内确实存在对应资源点；采集成功后只增加资源账户，不写入 `item_definitions`、`item_instances`、`inventory_entries` 或 `item_transfers`。
+资源系统是账号维度的通用货币/能量账户，用于账号用户角色生成、世界 NPC 生成、地图生成、物品生成等付费行为。采集请求携带 `userCharacterId` 时，服务端只用它校验该角色所在 `PresenceScope` 内确实存在对应资源点；采集成功后只增加资源账户，不写入 `item_definitions`、`item_instances`、`inventory_entries` 或 `item_transfers`。
 
 物品系统是独立的 AI 生成与摆放系统，不由采集资源直接产出。玩家后续应通过“生成物品”入口输入提示词，例如家具、小建筑、装饰、工具等，由生成管线创建 `ItemDefinition`/素材/占地规则，再把生成出的 `ItemInstance` 放入角色背包。物品可以被放置到地图中，用来布置玩家想要的场景。
 
@@ -534,13 +526,13 @@ NPC：
 - HTTP `x-user-id` 和 WebSocket `uid` 兼容调试路径。
 - 世界目录 `worldx.meta.json` 记录 `ownerUserId/visibility`。
 - 新生成世界归属创建账号；世界列表、切换和删除按账号权限过滤。
-- 本地多用户账户 API：`GET /api/users`、`GET /api/users/me`、`POST /api/users`、`PATCH /api/users/:id`、`DELETE /api/users/:id`。
-- 前端 `用户/账号` 面板，可注册、登录和退出账号，并在账号变化时清理当前角色选择。
+- 本地账号 API：`GET /api/users`、`GET /api/users/me`、`PATCH /api/users/:id`、`DELETE /api/users/:id`；`POST /api/users` 已停用并返回 `410`，创建账号统一走 `/api/auth/register`。
+- 前端 `用户/账号` 面板，可注册、登录、退出和删除账号，并在账号变化时清理当前角色选择。
 - 用户角色列表、创建、进入地图按账户过滤和校验。
 - 用户角色 API 支持列表、创建、改名、删除；删除带在线、背包、地图摆放物保护。
 - `MapRuntimeRegistry` 作为 `PresenceScope -> MapRuntime` 的第一层索引。
 - `/api/world/maps` 和 `/api/build/state` 返回 `mapRuntimes`。
-- `POST /api/build/collect` 支持 `userCharacterId`，并按用户角色 presence 校验资源点；成功后只增加资源账户，不写入背包物品。
+- `POST /api/build/collect` 和 `GET /api/build/state?userCharacterId=...` 支持按用户角色 presence 加载地图包资源点；成功后只增加资源账户，不写入背包物品。
 - `GET /api/user-characters/:id/inventory` 查询用户角色背包。
 - 前端 `InventoryPanel` 可查看当前用户角色背包。
 - `POST /api/items/place` 支持把背包物品摆放到当前地图，并按可行走 tile 校验。
@@ -548,36 +540,48 @@ NPC：
 - `POST /api/items/generate` 支持消耗资源，根据提示词生成可摆放物品并放入用户角色背包。
 - 背包面板支持输入提示词生成家具、小建筑或装饰物。
 - 背包可摆放物品支持进入地图摆放模式，点击可行走 tile 后调用摆放 API 并在 Phaser 中渲染占位物。
+- 背包物品支持基础“丢弃”，并为未来特殊物品预留“使用”：`POST /api/items/use` 只接受 `definition.metadata.usable === true` 的物品；当前 AI 生成家具、装饰、小建筑默认不可使用，只能摆放、删除、丢弃或交易。
 - 摆放物 footprint 会写入前端 runtime 动态阻挡层并刷新寻路；服务端拒绝 footprint 重叠。
 - `user_character_runtime` 保存 `world_id/timeline_id/current_map_id`。
 - `GET /api/user-characters`、`POST /api/user-characters`、`POST /api/world/map/enter`。
+- `/api/user-character-runtime/avatar`、`/api/user-character-runtime/avatar/move`、`/api/user-character-runtime/mode` 作为用户角色运行态接口；旧 `/api/player/*` 已从服务挂载中移除。
+- 时间线 API 已支持 `userCharacterId` 作用域参数；创建、查询、切换、删除和回放事件读取会优先使用该用户角色所在的 world/timeline，避免服务端全局 active timeline 影响当前操控角色。
 - WebSocket 用户角色事件按 presence scope 隔离。
 - 前端选择/创建用户角色入口。
 - 前端 `我的角色` 格子面板，可创建角色、查看角色列表；点击格子只选中查看，点击“应用”才切换当前操控角色，并可改名/删除。
 - 新账号注册时创建两个默认固定角色；登录、角色列表查询和进入地图页不再临时补角色。
-- 用户角色创建已复用 NPC 角色 spritesheet 生成管线，生成结果写入 `user-characters/<userCharacterId>/` 并通过 `appearance.spriteUrl` 加载。
-- `UserCharacterController`、`RemoteUserCharacterManager` 作为用户角色渲染入口。
+- 用户角色创建已复用 NPC 角色 spritesheet 生成能力，但产物写入账号级 `output/account-assets/user-characters/<userCharacterId>/`，并通过 `appearance.spriteUrl` 加载。
+- 建造面板“生成 NPC”已与用户角色创建分离：`/api/build/character` 必须携带当前操控的 `userCharacterId`，服务端按该角色的 `PresenceScope` 定位目标世界，产物只写入该世界 `characters/` 和 `config/characters/`，不会进入账号角色列表，也不会使用服务器全局 active world。
+- 建造面板“生成地图”已改为同样的作用域模型：`/api/build/map/expand` 必须携带 `userCharacterId`，新地图节点只追加到该角色当前所在世界的 `mapNodes/mapSpawnPoints/mapLinks`。
+- `UserCharacterController`、`RemoteUserCharacterManager` 作为用户角色渲染入口；本地移动、点击寻路、碰撞校验和相机跟随实现已迁入 `UserCharacterController`，旧 `PlayerController` 兼容导出已移除。前端运行态 API 已改用 `/api/user-character-runtime/*`。
 - `player_avatar` 作为兼容镜像保留。
 - 物品和交互扩展所需的 `ActorRef`、`PresenceScope`、物品相关类型和 DB 表。
+- 世界成员授权已实现基础表、API、在线面板管理入口和角色权限：`owner` 是世界拥有者；`admin` 可管理成员、踢人和修改可见性；`builder` 可共建；`viewer` 可以进入、查看、聊天、交易和采集账号资源货币，但不能修改世界运行态。旧 `member` 会归一化为 `builder`，旧 `guest` 会归一化为 `viewer`。
+- 在线玩家列表和背包赠送候选人已按当前用户角色 presence scope 查询；踢人按目标玩家所在世界做 owner 校验，不再依赖服务端全局 active map。
+- 地图物品生成、删除、摆放、拾取和摆放层查询已按当前用户角色 presence scope 操作；服务端通过 `MapPackageLoader` 按 `worldId/mapId` 读取地图包 collision 来校验 footprint。
+- 资源采集在带 `userCharacterId` 时使用角色 scope 下的 resource node 结算；`MapRuntimeRegistry` 会按该 scope 缓存地图包资源点，避免跨地图资源点串用。
+- 世界运行态修改已接入成员权限：`owner/admin/builder` 可以生成地图节点、摆放和拾取地图物品；`viewer` 不允许修改世界运行态。资源采集只增加当前账号资源货币，不改变地图，因此只要求账号可访问该世界。`/api/world/enter` 不会覆盖已有成员角色；实时在线邀请接受后默认登记为 `viewer`，不会把已有 `builder/admin` 降级。
+- 时间线切换支持携带 `userCharacterId`；切换完成后同一个账号用户角色会进入新时间线的当前地图，不再清空当前操控角色。
+- 结构化交互 API 已接入：`POST/GET/PATCH /api/actor-interactions` 使用 `ActorRef`，发起者必须是当前账号用户角色，用户角色目标必须处于同一 `PresenceScope`，事件通过 WebSocket 广播到同 scope。
 
 仍未完成：
 
-- 账号体系仍是本地轻量认证，没有接入正式 OAuth/邮箱验证/找回密码/管理员权限。
-- 世界成员授权、邀请链接、访问申请和世界公开/私有切换 UI；当前只有可见性 API。
-- 完整 per-map room runtime。当前服务器仍有全局 active map，`MapRuntimeRegistry` 只是第一阶段索引。
-- 物品素材生成、背包物品使用、丢弃和交换操作。
-- 地图物品拾取、移动、删除，以及服务端/多端同步动态阻挡层。
-- 玩家之间交换物品。
-- 用户角色和 NPC 的结构化交互 API。
-- WebSocket 事件名从 `player_*` 迁移到 `user_character_*`。
+- 账号体系仍是本地轻量认证，没有接入正式 OAuth/邮箱验证/找回密码/管理员权限；账号删除当前是直接清理，后续可增加删除前资产转移/归档。
+- 世界成员授权后续还缺访问申请、邀请审批、权限变更审计和更细的操作级权限；基础 `admin/builder/viewer` 已实现。
+- 完整 per-map room runtime。当前服务器仍有全局 active map，地图物品、资源采集、在线列表和时间线切换已先按 presence scope 收口，但 NPC 模拟、时间推进、地图热加载仍需继续拆到房间级 runtime。
+- 背包物品复杂使用效果，例如恢复、装备、任务触发、容器打开等。
+- 地图物品移动，以及更完整的服务端/多端同步动态阻挡层。
+- 玩家之间双向交换物品；当前已完成单向账号赠送、双向账号交换事务、背包基础交易 UI、请求主动撤销、15 分钟过期和基础历史筛选，后续补更完整历史审计报表。
+- 结构化交互的 UI、关系数值更新、AI 回复编排和协作任务规则。
+- WebSocket 主事件名已从 `player_*` 迁移到 `user_character_*`，运行时源码不再接收旧 `player_*` WebSocket 消息名。
 
 ## 后续实施顺序
 
-1. 世界访问层：新增世界成员/邀请表，支持 owner 邀请其他账号进入自己的世界。
+1. 世界访问层：补齐访问申请、邀请审批、成员权限变更审计和更细的操作级协作规则。
 2. 房间层：把全局 active map 拆成 `PresenceScope -> MapRuntime`，进入他人世界不再改全局 active map。
 3. 账号层：替换本地 `output/auth.db` 为正式认证服务，补齐密码找回、会话过期刷新和管理员权限。
-4. 背包层：补齐物品使用、丢弃、转移 API。
-5. 地图物品层：补齐地图物品拾取、删除、移动和多端同步动态阻挡层。
-6. 交换层：实现同 scope 用户角色之间的交换请求、确认、取消和事务提交。
-7. 交互层：用 `ActorRef` 实现用户角色与 NPC、用户角色与用户角色的统一交互。
-8. 兼容清理：逐步减少 `player_avatar`、`PlayerController`、`player_*` 命名的主路径使用。
+4. 背包层：为显式可使用物品补齐具体使用效果、装备槽、容器和任务触发。
+5. 地图物品层：补齐地图物品移动和更完整的多端同步动态阻挡层。
+6. 交换层：在单向赠送基础上已实现同 scope 用户之间的双向交换报价、接收方确认/拒绝、事务提交、背包 UI 报价选择、主动撤销、过期和历史筛选；下一步补更完整审计报表和交易详情页。
+7. 交互层：在 `ActorRef` 基础 API 上补齐角色交互菜单、关系数值、AI 回复编排和协作任务规则。
+8. 兼容清理：逐步减少 `player_avatar` 等旧命名的主路径使用；`PlayerController` 兼容导出和 `/api/player/*` 兼容路由已移除。

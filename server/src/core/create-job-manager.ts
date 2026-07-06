@@ -6,6 +6,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { writeWorldAccessMetadata } from "../utils/world-directories.js";
 import * as accountAssets from "../store/account-asset-store.js";
+import { getDataDir } from "../utils/data-dir.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,7 +14,7 @@ const __dirname = path.dirname(__filename);
 // `server/src/core` is 3 levels below WorldX root.
 const WORLDSPARK_ROOT = path.resolve(__dirname, "../../..");
 const ORCHESTRATOR_ENTRY = path.join(WORLDSPARK_ROOT, "orchestrator/src/index.mjs");
-const GENERATED_WORLDS_DIR = path.join(WORLDSPARK_ROOT, "output/worlds");
+const GENERATED_WORLDS_DIR = getDataDir("worlds");
 const JOB_LOG_DIRNAME = "logs";
 const JOB_LOG_FILENAME = "generation.log";
 
@@ -494,7 +495,7 @@ class CreateJobManager extends EventEmitter {
 
   private withLogHint(message: string, worldId: string | null): string {
     if (!worldId) return message;
-    return `${message}. Check logs in output/worlds/${worldId}/${JOB_LOG_DIRNAME}/`;
+    return `${message}. Check logs in ${path.join(GENERATED_WORLDS_DIR, worldId, JOB_LOG_DIRNAME)}/`;
   }
 }
 

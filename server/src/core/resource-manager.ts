@@ -241,6 +241,20 @@ export class ResourceManager {
    * @param objectId 资源点 ID
    */
   collectResource(playerId: string, objectId: string, userId?: string): ResourceResult {
+    const node = this.resourceNodes.get(objectId);
+    return this.collectResourceNode(playerId, objectId, node, userId);
+  }
+
+  collectScopedResource(playerId: string, node: ResourceNodeConfig, userId?: string): ResourceResult {
+    return this.collectResourceNode(playerId, node.id, node, userId);
+  }
+
+  private collectResourceNode(
+    playerId: string,
+    objectId: string,
+    node: ResourceNodeConfig | undefined | null,
+    userId?: string,
+  ): ResourceResult {
     const ownerUserId = userId || userCharacterStore.getUserCharacterOwnerId(playerId);
     if (!ownerUserId) {
       return {
@@ -249,7 +263,6 @@ export class ResourceManager {
         reason: `Resource owner account not found for player: ${playerId}`,
       };
     }
-    const node = this.resourceNodes.get(objectId);
     if (!node) {
       return {
         success: false,

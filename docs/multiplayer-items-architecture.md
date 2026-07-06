@@ -46,7 +46,7 @@
 
 资源和物品必须保持边界清晰：
 
-- 资源是世界内的货币/能量账户，用于角色生成、地图生成、物品生成等付费。
+- 资源是账号维度的货币/能量账户，用于账号用户角色生成、世界 NPC 生成、地图生成、物品生成等付费。
 - 采集资源只增加资源账户，不创建物品实例，也不进入背包。
 - 物品由独立的 AI 物品生成、拾取、交易、系统奖励等流程产生。
 - 玩家想要家具、小建筑、装饰物时，应消耗资源调用物品生成管线，生成可放置物品后进入背包。
@@ -99,6 +99,8 @@ type InventoryOwnerRef = {
 - 地图上的物品被拾取时，placement 标为 `picked_up`，同时把原 `ItemInstance` 写回目标角色背包。
 - 玩家之间交换物品时，必须在同一 `PresenceScope` 内，且双方 owner 都可用。
 - NPC 也可以持有物品，但是否允许玩家交换由交互规则控制。
+- 账号之间赠送或交易完成时，`ItemInstance` 和对应 `ItemDefinition` 的账号归属都必须迁移到新 owner。否则接收方会拿到实例但无素材/定义访问权，原账号删除时也可能误删仍被引用的定义。
+- 删除账号时只能删除该账号仍拥有、且没有被其他实例引用的定义和素材；跨账号交易后的资产必须保留给当前 owner。
 
 ## 摆放与可行走 tile
 
@@ -109,7 +111,7 @@ type InventoryOwnerRef = {
 - 默认 footprint 为 `1x1` tile。
 - footprint 内每个 tile 都必须在地图内且可行走。
 - 不可行走 tile、地图外 tile、未加载地图 runtime 都拒绝摆放。
-- footprint 是碰撞/占地尺寸，不等于屏幕可见尺寸。前端渲染时会把道具贴图放大到可见的最小视觉尺寸，并以 footprint 中心对齐。
+- footprint 是碰撞/占地尺寸，不等于屏幕可见尺寸。前端渲染时会把道具贴图放大到可见的最小视觉尺寸，并以 footprint 中心对齐。摆放时可设置 `visualScale` 做 `0.5x - 3x` 等比例视觉缩放；该值只影响显示，不改变 footprint、服务端碰撞校验或寻路阻挡。
 
 摆放物阻挡使用独立的 runtime `placement_collision`，不修改原始 TMJ collision 图层。服务端摆放时会拒绝和已有摆放物 footprint 重叠；前端加载/新增摆放物后，会把 `blocksMovement !== false` 的 footprint 写入 MapManager 的动态阻挡 tile，并刷新寻路网格。这样可以让物品被拾取/移动时动态恢复通行。
 
@@ -117,7 +119,7 @@ type InventoryOwnerRef = {
 
 - 背包中可摆放物品显示“摆放”按钮。
 - 点击后进入地图摆放模式，禁用角色点击移动。
-- 鼠标在地图上显示 footprint 预览，绿色表示前端初步可摆放，红色表示不可摆放。
+- 鼠标在地图上显示 footprint 预览，绿色表示前端初步可摆放，红色表示不可摆放；`[` / `]` 可缩小或放大当前摆放物的视觉尺寸。
 - 左键调用 `POST /api/items/place`，由服务端最终校验并落库。
 - 右键或 Esc 取消摆放模式。
 - 已摆放物品优先加载 `assetUrl` 对应 PNG/SVG 素材渲染；缺少素材时回退到程序绘制的占位块和名称标签。
@@ -133,18 +135,22 @@ type InventoryOwnerRef = {
 - 跨地图交易默认不允许，除非后续引入邮件、仓库或全局市场。
 - 同一账户可以拥有多个角色，但一个角色只能有一个在线 presence；同一角色多端登录应使用接管/复用策略，而不是复制一个角色实体。
 
-后续 WebSocket 事件建议新增：
+当前已实现的物品 WebSocket 事件：
+
+- `map_item_placed`：`POST /api/items/place` 成功后，广播给相同 `{ worldId, timelineId, mapId }` 的所有在线客户端，前端重拉地图摆放层。
+- `map_item_picked_up`：`POST /api/items/pickup` 成功后，广播给相同 `{ worldId, timelineId, mapId }` 的所有在线客户端，前端重拉地图摆放层。
+- `item_transfer_requested`：`POST /api/items/transfer/request` 或 `POST /api/items/trade/request` 成功后，广播给同地图在线客户端；`transfer.kind = gift/trade` 区分单向赠送和双向交换报价。
+- `item_transfer_completed`：接收方接受赠送或交易后广播。赠送会把发起账号的物品迁到接收账号；交易会在同一事务里互换双方报价物品的账号归属。
+- `item_transfer_cancelled`：接收方拒绝赠送后广播，请求状态改为 `cancelled`。
+- `actor_interaction_started`：结构化角色交互创建后广播给同一 `PresenceScope`。
+- `actor_interaction_updated`：结构化角色交互状态更新后广播给同一 `PresenceScope`。
+
+尚未实现的实时事件：
 
 - `item_spawned`
-- `item_picked_up`
-- `item_placed`
 - `item_removed`
-- `item_transfer_requested`
-- `item_transfer_completed`
-- `actor_interaction_started`
-- `actor_interaction_updated`
 
-旧 `player_*` 事件继续兼容一段时间，新事件使用 `user_character_*`、`item_*`、`actor_*` 命名。
+用户角色事件使用 `user_character_*`、`item_*`、`actor_*` 命名；旧 `player_*` WebSocket 消息名已从运行时源码移除。
 
 ## 交互系统
 
@@ -164,19 +170,38 @@ type ActorInteractionKind =
 
 - 玩家角色和 NPC 对话。
 - 玩家角色给 NPC 赠送物品。
-- 两个玩家交换物品。
+- 两个玩家交换物品。当前已实现同 `PresenceScope` 内的双向账号交易报价：发起方提供自己的 `offerEntryId`，指定目标账号的 `requestedEntryId`，接收方确认后事务提交互换。独立交易面板会列出同地图在线玩家、自己的账号背包物品和对方可交换物品；请求支持主动撤销、15 分钟过期和基础历史筛选。
 - NPC 和 NPC 之间的剧情互动。
 - 玩家角色触发协作任务。
+
+当前已落地第一版结构化入口：
+
+- `POST /api/actor-interactions`：当前账号用户角色作为发起者，对同 scope 用户角色或 NPC 创建交互事件。
+- `GET /api/actor-interactions?userCharacterId=...`：按当前用户角色所在 `PresenceScope` 查询交互事件。
+- `PATCH /api/actor-interactions/:id`：交互参与者更新状态，例如 `active/completed/cancelled/failed`。
+- WebSocket 广播 `actor_interaction_started`、`actor_interaction_updated` 到同一 `PresenceScope`。
+
+这版只负责结构化记录、权限校验和广播；双向交易确认和基础交易 UI 已接入。关系数值、AI 回复、装备槽、容器和更详细审计报表仍是后续层。
 
 ## 迁移顺序
 
 1. 保留现有资源数和采集按钮，新增物品领域类型与 DB 表。
 2. 把采集产物从“全局资源数”扩展为“可选生成物品 entry”，旧资源数继续同步用于建造成本。
-3. 增加背包 API：查询角色背包、移动物品、丢弃物品。
+3. 增加背包 API：查询角色背包、丢弃物品，并为显式可使用物品预留使用接口。
 4. 增加地图摆放 API：摆放、拾取、查询当前地图物品。
 5. 增加交换 API：发起交换、确认、取消、完成事务。
-6. 把多人 WebSocket 的物品事件按 `PresenceScope` 广播。
-7. 再做 UI：背包面板、地图物品渲染、交换弹窗、摆放模式。
+6. 把多人 WebSocket 的物品和交互事件按 `PresenceScope` 广播。
+7. 再做 UI：背包面板、地图物品渲染、交换弹窗、摆放模式、角色交互菜单。
+
+当前背包基础生命周期已接入：
+
+- `POST /api/items/use`：只允许 `definition.metadata.usable === true` 的物品使用，移出背包并写 `kind = "use"` 审计。AI 生成家具、装饰、小建筑默认 `usable=false`，不显示“使用”入口。
+- `POST /api/items/drop`：当前账号用户角色丢弃物品，移出背包并写 `kind = "drop"` 审计。
+- `POST /api/items/trade/request`：当前账号用户角色向同地图在线账号发起双向交换，要求发起方物品和目标物品都仍归属各自账号。
+- `GET /api/items/trade/candidates?userCharacterId=...&targetUserId=...`：只在目标账号与当前用户角色处于同一 `PresenceScope` 且在线时返回目标账号可交易背包物品，供交易 UI 选择报价。
+- `POST /api/items/transfer/:transferId/respond`：接收方接受或拒绝赠送/交易；交易接受时事务性互换两边物品，任一物品已移动则失败。
+- `POST /api/items/transfer/:transferId/cancel`：发起方主动撤销待处理赠送/交易；待处理请求会在列表或响应前按 `metadata.expiresAt` 自动过期为 `failed`。
+- 背包 UI 在选中格子后显示“丢弃/删除/摆放”等资产管理动作；只有显式 `metadata.usable=true` 且已有使用语义的物品才显示“使用”。赠送、交换、收到的请求、发出的请求和基础交易历史统一进入独立 `TradePanel`，避免交易能力隐藏在背包单个物品格里。复杂使用效果、装备槽、容器、任务触发和更详细审计报表仍是后续层。
 
 ## 当前实现边界
 

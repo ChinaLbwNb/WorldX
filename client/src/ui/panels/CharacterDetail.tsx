@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { apiClient } from "../services/api-client";
+import { networkManager } from "../../systems/NetworkManager";
 import type {
   CharacterDetail as CharDetailType,
   MemoryEntry,
@@ -67,11 +68,15 @@ export function CharacterDetail({
   const [storedEvents, setStoredEvents] = useState<SimulationEvent[]>([]);
 
   useEffect(() => {
-    apiClient.getCharacterDetail(charId).then(setDetail).catch(console.warn);
+    apiClient.getCharacterDetail(charId, networkManager.getSelectedUserCharacterId() || undefined)
+      .then(setDetail)
+      .catch(console.warn);
   }, [charId]);
 
   useEffect(() => {
-    apiClient.getLocations().then(setLocations).catch(console.warn);
+    apiClient.getLocations(networkManager.getSelectedUserCharacterId() || undefined)
+      .then(setLocations)
+      .catch(console.warn);
   }, []);
 
   useEffect(() => {
@@ -127,7 +132,9 @@ export function CharacterDetail({
       setEditFlash(t("charDetail.saved"));
       setTimeout(() => setEditFlash(null), 2000);
       setEditing(false);
-      apiClient.getCharacterDetail(charId).then(setDetail).catch(console.warn);
+      apiClient.getCharacterDetail(charId, networkManager.getSelectedUserCharacterId() || undefined)
+        .then(setDetail)
+        .catch(console.warn);
     } catch (err) {
       setEditFlash(t("charDetail.saveFailed", { error: err instanceof Error ? err.message : String(err) }));
     } finally {

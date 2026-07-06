@@ -50,10 +50,10 @@ export interface TickAdvanceResult {
 }
 
 export type MainAreaZone = "东" | "南" | "西" | "北" | "中";
-export interface WorldMapsState {
+export interface MapNodesState {
   currentWorldId: string;
   activeMapId: string;
-  maps: WorldMapNodeConfig[];
+  mapNodes: WorldMapNodeConfig[];
   links: WorldMapLinkConfig[];
   currentPlayerMapId: string;
 }
@@ -75,7 +75,7 @@ export class WorldManager {
   private contentLanguage: "zh" | "en" = "zh";
   private originalPrompt = "";
   private activeMapId = ORIGIN_MAP_ID;
-  private worldMaps: WorldMapNodeConfig[] = [];
+  private mapNodes: WorldMapNodeConfig[] = [];
   private mapLinks: WorldMapLinkConfig[] = [];
   private mapSpawnPoints: MapSpawnPointConfig[] = [];
 
@@ -88,7 +88,7 @@ export class WorldManager {
     this.ensureMapWorldInitialized();
     const config = loadWorldConfig();
     this.activeMapId = this.resolveActiveMapId(config);
-    this.worldMaps = normalizeWorldMaps(config.worldMaps, config.worldName ?? "初始地图");
+    this.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
     this.mapLinks = normalizeMapLinks(config.mapLinks);
     this.mapSpawnPoints = normalizeMapSpawnPoints(config.mapSpawnPoints);
     const activeFragment = this.loadActiveMapFragment();
@@ -225,12 +225,12 @@ export class WorldManager {
     return this.activeMapId;
   }
 
-  getWorldMapsState(): WorldMapsState {
+  getMapNodesState(): MapNodesState {
     const worldDir = getWorldDir();
     return {
       currentWorldId: worldDir ? path.basename(worldDir) : "",
       activeMapId: this.activeMapId,
-      maps: this.worldMaps,
+      mapNodes: this.mapNodes,
       links: this.mapLinks,
       currentPlayerMapId: this.activeMapId,
     };
@@ -243,31 +243,19 @@ export class WorldManager {
   getMapDir(mapId: string): string | null {
     const worldDir = getWorldDir();
     if (!worldDir || !isSafeMapId(mapId)) return null;
-    const mapNode = this.worldMaps.find((map) => map.id === mapId);
+    const mapNode = this.mapNodes.find((map) => map.id === mapId);
     const mapDirName = mapNode?.mapDir || mapId;
-    return path.join(worldDir, "maps", mapDirName);
+    const mapDir = path.join(worldDir, "maps", mapDirName);
+    if (fs.existsSync(mapDir)) return mapDir;
+    if (mapId === ORIGIN_MAP_ID) {
+      const legacyMapDir = path.join(worldDir, "map");
+      if (fs.existsSync(legacyMapDir)) return legacyMapDir;
+    }
+    return mapDir;
   }
 
   getActiveMapAssetPrefix(): string {
     return `/assets/maps/${encodeURIComponent(this.activeMapId)}`;
-  }
-
-  travelToMap(targetMapId: string): { activeMapId: string; targetMapId: string; spawn: { x: number; y: number }; requiresReload: true } {
-    const target = this.worldMaps.find((map) => map.id === targetMapId);
-    if (!target) {
-      throw new Error(`Map not found: ${targetMapId}`);
-    }
-    if (target.status !== "available") {
-      throw new Error(`Map is not available: ${targetMapId}`);
-    }
-    this.updateWorldConfig((config) => {
-      config.activeMapId = targetMapId;
-    });
-    reloadConfigs();
-    this.activeMapId = targetMapId;
-    this.reloadActiveMapData();
-    const spawn = this.getDefaultSpawnForMap(targetMapId);
-    return { activeMapId: targetMapId, targetMapId, spawn, requiresReload: true };
   }
 
   appendMapNode(
@@ -276,7 +264,7 @@ export class WorldManager {
     link?: WorldMapLinkConfig,
   ): void {
     this.updateWorldConfig((config) => {
-      const maps = normalizeWorldMaps(config.worldMaps, config.worldName ?? "初始地图");
+      const maps = normalizeMapNodes(config, config.worldName ?? "初始地图");
       if (maps.some((candidate) => candidate.id === map.id)) {
         throw new Error(`Map already exists: ${map.id}`);
       }
@@ -284,7 +272,7 @@ export class WorldManager {
       if (occupied.has(`${map.gridX},${map.gridY}`)) {
         throw new Error(`Map grid slot already exists: ${map.gridX},${map.gridY}`);
       }
-      config.worldMaps = [...maps, map];
+      config.mapNodes = [...maps, map];
       if (link) {
         config.mapLinks = [...normalizeMapLinks(config.mapLinks), link];
       }
@@ -294,7 +282,7 @@ export class WorldManager {
     });
     reloadConfigs();
     const config = loadWorldConfig();
-    this.worldMaps = normalizeWorldMaps(config.worldMaps, config.worldName ?? "初始地图");
+    this.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
     this.mapLinks = normalizeMapLinks(config.mapLinks);
     this.mapSpawnPoints = normalizeMapSpawnPoints(config.mapSpawnPoints);
   }
@@ -887,7 +875,7 @@ export class WorldManager {
     // 2. Re-load world config
     const config = loadWorldConfig();
     this.activeMapId = this.resolveActiveMapId(config);
-    this.worldMaps = normalizeWorldMaps(config.worldMaps, config.worldName ?? "初始地图");
+    this.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
     this.mapLinks = normalizeMapLinks(config.mapLinks);
     this.mapSpawnPoints = normalizeMapSpawnPoints(config.mapSpawnPoints);
     const activeFragment = this.loadActiveMapFragment();
@@ -964,13 +952,13 @@ export class WorldManager {
 
     const changed =
       config.activeMapId !== ORIGIN_MAP_ID ||
-      !Array.isArray(config.worldMaps) ||
-      config.worldMaps.length === 0 ||
+      !Array.isArray(config.mapNodes) ||
+      config.mapNodes.length === 0 ||
       !Array.isArray(config.mapLinks) ||
       !Array.isArray(config.mapSpawnPoints);
     if (changed) {
       config.activeMapId = config.activeMapId || ORIGIN_MAP_ID;
-      config.worldMaps = normalizeWorldMaps(config.worldMaps, config.worldName ?? "初始地图");
+      config.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
       config.mapLinks = normalizeMapLinks(config.mapLinks);
       config.mapSpawnPoints = normalizeMapSpawnPoints(config.mapSpawnPoints);
       fs.writeFileSync(worldJsonPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
@@ -979,7 +967,7 @@ export class WorldManager {
   }
 
   private resolveActiveMapId(config: WorldConfig): string {
-    const maps = normalizeWorldMaps(config.worldMaps, config.worldName ?? "初始地图");
+    const maps = normalizeMapNodes(config, config.worldName ?? "初始地图");
     const activeMapId = config.activeMapId || ORIGIN_MAP_ID;
     return maps.some((map) => map.id === activeMapId) ? activeMapId : ORIGIN_MAP_ID;
   }
@@ -1002,19 +990,9 @@ export class WorldManager {
     if (!worldDir) throw new Error("No active world");
     const worldJsonPath = findWorldJsonPath(worldDir);
     const config = JSON.parse(fs.readFileSync(worldJsonPath, "utf-8")) as WorldConfig;
+    config.mapNodes = normalizeMapNodes(config, config.worldName ?? "初始地图");
     mutator(config);
     fs.writeFileSync(worldJsonPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
-  }
-
-  private getDefaultSpawnForMap(mapId: string): { x: number; y: number } {
-    const explicit = this.mapSpawnPoints.find((point) => point.mapId === mapId && point.default)
-      || this.mapSpawnPoints.find((point) => point.mapId === mapId);
-    if (explicit) {
-      const safe = this.findWalkablePixelNear(explicit.x, explicit.y, 20);
-      return safe ?? { x: explicit.x, y: explicit.y };
-    }
-    const center = this.getMainAreaCenterPixel();
-    return this.findWalkablePixelNear(center.x, center.y, 50) ?? center;
   }
 
   private findObjectConfig(objectId: string): ObjectConfig | undefined {
@@ -1412,7 +1390,14 @@ function inferWorldSizeFromWorldDir(mapDirOverride?: string | null): WorldSizeCo
   }
 }
 
-function normalizeWorldMaps(
+function normalizeMapNodes(
+  config: Pick<WorldConfig, "mapNodes">,
+  originName: string,
+): WorldMapNodeConfig[] {
+  return normalizeMapNodeList(config.mapNodes, originName);
+}
+
+function normalizeMapNodeList(
   maps: WorldMapNodeConfig[] | undefined,
   originName: string,
 ): WorldMapNodeConfig[] {

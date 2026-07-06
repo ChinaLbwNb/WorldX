@@ -4,6 +4,7 @@ import { CharacterManager } from "../core/character-manager.js";
 import { PlayerManager } from "../core/player-manager.js";
 import { ResourceManager } from "../core/resource-manager.js";
 import { MapRuntimeRegistry } from "../core/map-runtime-registry.js";
+import { MapPackageLoader } from "../core/map-package-loader.js";
 import { CharacterBuilder } from "../core/character-builder.js";
 import { MapExpander } from "../core/map-expander.js";
 import { ItemGenerator } from "../core/item-generator.js";
@@ -24,6 +25,7 @@ export class AppContext {
   playerManager!: PlayerManager;
   resourceManager!: ResourceManager;
   mapRuntimeRegistry = new MapRuntimeRegistry();
+  mapPackageLoader = new MapPackageLoader();
   characterBuilder!: CharacterBuilder;
   mapExpander!: MapExpander;
   itemGenerator!: ItemGenerator;
@@ -73,6 +75,7 @@ export class AppContext {
 
     this.worldDirPath = worldDirPath;
     reloadConfigs();
+    this.mapPackageLoader.clearCache();
 
     const timelineId = this.timelineManager.initialize(worldDirPath, undefined, userId);
     const dbPath = this.timelineManager.getTimelineDbPath(worldDirPath, timelineId);
@@ -94,6 +97,7 @@ export class AppContext {
     initDatabase(dbPath);
 
     reloadConfigs();
+    this.mapPackageLoader.clearCache();
     this.rebuildRuntime();
     this.beginRecording();
     this.eventBus.emit("simulation_status", { status: "idle" });
@@ -111,6 +115,7 @@ export class AppContext {
     initDatabase(dbPath);
 
     reloadConfigs();
+    this.mapPackageLoader.clearCache();
     this.rebuildRuntime();
     if (userCharacterSnapshots.length > 0) {
       this.playerManager.seedUserCharacterSnapshots(userCharacterSnapshots);

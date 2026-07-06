@@ -30,7 +30,7 @@ WorldX 的地图生成管线是一个多阶段、多模型协作的自动化流�
 
 | 模型 | 定位 | 调用方式 | 用于哪些步骤 |
 |------|------|----------|-------------|
-| gemini-3.1-flash-image | 图像生成/编辑 | 文生图 / 图生图 | Step 1 地图生成、Step 3/3.2 彩色叠加、Step 4 可行走标注、扩展 Step 2 区域生成 |
+| MaaS_Ge_2.5_flash_image_20251002 | 图像生成/编辑 | 文生图 / 图生图 | Step 1 地图生成、Step 3/3.2 彩色叠加、Step 4 可行走标注、扩展 Step 2 区域生成 |
 | gemini-3.1-pro-preview | 多模态视觉审查 | 文本+图像输入 | Step 1 审查、Step 3/3.2 区域确认、Step 4 审查、扩展 Step 2 审查 |
 | gemini-2.5-pro-preview | 推理/设计 | 纯文本对话 | Step 1 提示词调整、扩展 Step 1 新区域设计 |
 
@@ -211,12 +211,21 @@ node generators/map/src/generate-map-node.mjs \
 7. 运行程序化验证：地图资产存在、TMJ 尺寸合法、collision layer 完整、可行走比例合理、出生点落在可走格、局部语义不为空。
 8. 验证通过后将 `<targetDir>.tmp-*` rename 为正式目录；验证失败或脚本异常时清理临时目录。
 
-后端 `MapExpander` 在脚本成功后只追加 `worldMaps` 和 `mapSpawnPoints`。用户 prompt 决定新地图主题；当前 active map 只作为风格和世界观参考，不再触发方向拓扑、背景拼接、碰撞合并或 west/north 坐标迁移。
+后端 `MapExpander` 在脚本成功后只追加 `mapNodes` 和 `mapSpawnPoints`。用户 prompt 决定新地图主题；当前 active map 只作为风格和世界观参考，不再触发方向拓扑、背景拼接、碰撞合并或 west/north 坐标迁移。当前运行时数据合同只使用 `mapNodes`。
 
 近期测试数据：
 
 - 旧方向版脚本直跑 `map_origin -> north`：总耗时约 132 秒，Step 1 第 2 次通过，validation 通过。
 - 旧方向版 API 全链路 `map_origin -> north`：总耗时约 134 秒，Step 1 第 3 次通过，validation 通过，生成的 `06-final.tmj` 可通过 `/assets/maps/<mapId>/06-final.tmj` 访问。
+
+## NPC 与用户角色 spritesheet 生成管线
+
+`generators/character/` 提供的是底层 spritesheet 生成能力，而不是某一种业务实体。当前有两条业务入口复用它：
+
+- **账号用户角色生成**：入口在“我的角色”面板，API 走 `/api/user-characters`。生成出的 spritesheet 写入账号级资产目录 `output/account-assets/user-characters/<userCharacterId>/`，并记录到账号用户角色表。它会进入“我的角色”列表，可由用户切换和操控。
+- **世界 NPC 生成**：入口在建造面板“生成 NPC”，API 走 `/api/build/character`。生成出的 spritesheet 写入当前世界的 `characters/<npcId>/`，配置写入 `config/characters/<npcId>.json`，并加入世界 NPC/Simulation 系统。它不写账号用户角色表，也不会进入“我的角色”列表。
+
+这两条入口可以共用图像模型、参考模板、背景裁切和 metadata 解析，但不能共用数据归属、权限判断或前端列表展示。
 
 ## 旧拼接地图扩展管线（已移除）
 
@@ -224,7 +233,7 @@ node generators/map/src/generate-map-node.mjs \
 
 - 后端入口仍是 `/api/build/map/expand`，但语义是 `prompt -> new map node`。
 - 生成脚本是 `generators/map/src/generate-map-node.mjs`。
-- 世界数据只写入 `worldMaps` 和 `mapSpawnPoints`。
+- 世界数据只写入 `mapNodes` 和 `mapSpawnPoints`。
 - 不再生成或维护 `chunks`、`expansionExits`、拼接背景图、合并 TMJ、west/north 坐标迁移或出口点合同。
 
 旧测试世界若仍含根目录 `map/`、`chunks` 或 `expansionExits`，应先迁移到 `maps/map_origin/` 后再进入运行时。
@@ -256,7 +265,7 @@ node generators/map/src/generate-map-node.mjs \
 
 | 模型 | 环境变量前缀 | 默认模型 |
 |------|-------------|---------|
-| 图像生成 | `IMAGE_GEN_*` | google/gemini-3.1-flash-image-preview |
+| 图像生成 | `IMAGE_GEN_*` | MaaS_Ge_2.5_flash_image_20251002 |
 | 视觉审查 | `VISION_*` | google/gemini-3.1-pro-preview |
 | 推理设计 | `ORCHESTRATOR_*` | google/gemini-2.5-pro-preview |
 

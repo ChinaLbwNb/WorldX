@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiClient } from "../services/api-client";
+import { networkManager } from "../../systems/NetworkManager";
 import type { CharacterInfo, LocationInfo, SimulationEvent } from "../../types/api";
 import {
   buildCharacterNameMap,
@@ -13,8 +14,12 @@ export function EventFeed({ events }: { events: SimulationEvent[] }) {
   const [locations, setLocations] = useState<LocationInfo[]>([]);
 
   useEffect(() => {
-    apiClient.getCharacters().then(setCharacters).catch(console.warn);
-    apiClient.getLocations().then(setLocations).catch(console.warn);
+    apiClient.getCharacters(networkManager.getSelectedUserCharacterId() || undefined)
+      .then(setCharacters)
+      .catch(console.warn);
+    apiClient.getLocations(networkManager.getSelectedUserCharacterId() || undefined)
+      .then(setLocations)
+      .catch(console.warn);
   }, []);
 
   const characterNames = useMemo(() => buildCharacterNameMap(characters), [characters]);

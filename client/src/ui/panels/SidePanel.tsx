@@ -1,171 +1,101 @@
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { CharacterDetail } from "./CharacterDetail";
 import { apiClient } from "../services/api-client";
+import { networkManager } from "../../systems/NetworkManager";
 import type { CharacterInfo, SimulationEvent } from "../../types/api";
 import { formatActionName } from "../utils/event-format";
+import { centeredWindowStyle, useFloatingWindowZIndex } from "../components/panel-styles";
 
 export function SidePanel({
+  open,
+  focusToken,
   selectedCharId,
   followedCharId,
+  onClose,
   onSelect,
   onToggleFollow,
   events,
 }: {
+  open: boolean;
+  focusToken?: number;
   selectedCharId: string | null;
   followedCharId: string | null;
+  onClose: () => void;
   onSelect: (id: string | null) => void;
   onToggleFollow: (id: string) => void;
   events: SimulationEvent[];
 }) {
   const { t } = useTranslation();
   const [characters, setCharacters] = useState<CharacterInfo[]>([]);
-  const [open, setOpen] = useState(false);
-
-  const togglePanel = () => {
-    if (open) {
-      setOpen(false);
-      onSelect(null);
-      return;
-    }
-    setOpen(true);
-  };
+  const { zIndex, bringToFront } = useFloatingWindowZIndex(open, 840);
 
   useEffect(() => {
-    apiClient.getCharacters().then(setCharacters).catch(console.warn);
+    const loadCharacters = () =>
+      apiClient.getCharacters(networkManager.getSelectedUserCharacterId() || undefined)
+        .then(setCharacters)
+        .catch(console.warn);
+    loadCharacters();
     const timer = setInterval(() => {
-      apiClient.getCharacters().then(setCharacters).catch(console.warn);
+      loadCharacters();
     }, 15000);
     return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    if (selectedCharId) setOpen(true);
-  }, [selectedCharId]);
+    if (open) bringToFront();
+  }, [bringToFront, focusToken, open]);
+
+  if (!open) return null;
+
+  const selectedCharacter = characters.find((character) => character.id === selectedCharId) ?? null;
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        top: "var(--top-ui-offset, 52px)",
-        right: 0,
-        width: open ? 380 : 0,
-        height: "calc(100vh - var(--top-ui-offset, 52px))",
-        background: open
-          ? "linear-gradient(180deg, rgba(20,20,40,0.95), rgba(20,20,40,0.9))"
-          : "transparent",
-        backdropFilter: open ? "blur(8px)" : "none",
-        transition: "width 0.3s ease",
-        display: "flex",
-        flexDirection: "column",
-        zIndex: 90,
-        pointerEvents: open ? "auto" : "none",
-      }}
-    >
-      <button
-        onClick={togglePanel}
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 16,
-          width: 36,
-          height: 48,
-          background: "linear-gradient(90deg, rgba(26,26,46,0.95), rgba(30,30,50,0.8))",
-          border: "1px solid rgba(255,255,255,0.15)",
-          borderRight: "none",
-          borderRadius: "8px 0 0 8px",
-          color: "#e0e0e0",
-          cursor: "pointer",
-          fontSize: 18,
-          transform: "translateX(-100%)",
-          zIndex: 91,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          boxShadow: "-2px 0 8px rgba(0,0,0,0.3)",
-          transition: "background 0.2s, color 0.2s",
-          pointerEvents: "auto",
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = "linear-gradient(90deg, rgba(40,40,60,0.95), rgba(30,30,50,0.8))";
-          e.currentTarget.style.color = "#fff";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = "linear-gradient(90deg, rgba(26,26,46,0.95), rgba(30,30,50,0.8))";
-          e.currentTarget.style.color = "#e0e0e0";
-        }}
-        title={open ? t("sidePanel.collapseTitle") : t("sidePanel.expandTitle")}
-      >
-        {open ? "▸" : "◂"}
-      </button>
+    <aside style={{ ...panelStyle, zIndex }} onPointerDown={bringToFront}>
+      <header style={headerStyle}>
+        <div>
+          <div style={titleStyle}>{t("sidePanel.charList")}</div>
+          <div style={subtitleStyle}>{characters.length} 个世界 NPC</div>
+        </div>
+        <button
+          onClick={() => {
+            onSelect(null);
+            onClose();
+          }}
+          style={closeButtonStyle}
+          title={t("sidePanel.collapseTitle")}
+        >
+          ×
+        </button>
+      </header>
 
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", padding: "8px 12px", opacity: open ? 1 : 0, transition: "opacity 0.2s" }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 12,
-              gap: 8,
-              flexShrink: 0,
-            }}
-          >
-            <h3 style={{ color: "#e0e0e0", fontSize: 14, margin: 0 }}>
-              {selectedCharId ? t("sidePanel.charPanel") : t("sidePanel.charList")}
-            </h3>
-            <button
-              onClick={togglePanel}
-              style={{
-                background: "rgba(255,255,255,0.08)",
-                border: "1px solid rgba(255,255,255,0.12)",
-                borderRadius: 6,
-                color: "#e0e0e0",
-                cursor: "pointer",
-                fontSize: 12,
-                padding: "4px 8px",
-              }}
-            >
-              {t("sidePanel.collapse")}
-            </button>
-          </div>
-
-          <div className="custom-scrollbar" style={{ marginBottom: 12, flexShrink: 0, maxHeight: "30vh", overflowY: "auto", paddingRight: 4 }}>
-            <h3 style={{ color: "#e0e0e0", fontSize: 13, marginBottom: 8, position: "sticky", top: 0, background: "rgba(20,20,40,0.9)", zIndex: 1, paddingBottom: 4 }}>{t("sidePanel.charList")}</h3>
-            {characters.map((c) => (
-              <div
-                key={c.id}
-                onClick={() => {
-                  onSelect(c.id);
-                  setOpen(true);
-                }}
-                style={{
-                  padding: "7px 10px",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  background:
-                    c.id === selectedCharId
-                      ? "rgba(255,255,255,0.12)"
-                      : "transparent",
-                  color: "#e0e0e0",
-                  fontSize: 12,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  marginBottom: 2,
-                  transition: "background 0.15s, border-color 0.15s",
-                  border: c.id === selectedCharId ? "1px solid rgba(255,255,255,0.15)" : "1px solid transparent"
-                }}
+      <div style={bodyStyle}>
+        <section className="custom-scrollbar" style={listStyle}>
+          {characters.map((character) => {
+            const selected = character.id === selectedCharId;
+            return (
+              <button
+                key={character.id}
+                onClick={() => onSelect(character.id)}
+                style={npcRowStyle(selected)}
+                title={character.role}
               >
-                <span style={{ fontWeight: 600, fontSize: 13, color: "#fff", whiteSpace: "nowrap", flexShrink: 0 }}>{c.name}</span>
-                <span style={{ opacity: 0.45, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={c.role}>{c.role}</span>
-                <span style={{ marginLeft: "auto", opacity: 0.55, fontSize: 11, whiteSpace: "nowrap", flexShrink: 0 }}>
-                  {c.currentActionLabel || formatActionName(c.currentAction || "idle")}
+                <span style={npcNameStyle}>{character.name}</span>
+                <span style={npcRoleStyle}>{character.role}</span>
+                <span style={npcActionStyle}>
+                  {character.currentActionLabel || formatActionName(character.currentAction || "idle")}
                 </span>
-              </div>
-            ))}
-          </div>
+              </button>
+            );
+          })}
+          {characters.length === 0 && (
+            <div style={emptyStyle}>当前地图暂无 NPC。</div>
+          )}
+        </section>
 
-          {selectedCharId && (
+        <section className="custom-scrollbar" style={detailStyle}>
+          {selectedCharId && selectedCharacter ? (
             <CharacterDetail
               key={selectedCharId}
               charId={selectedCharId}
@@ -174,8 +104,117 @@ export function SidePanel({
               characters={characters}
               liveEvents={events}
             />
+          ) : (
+            <div style={emptyStyle}>选择左侧 NPC 查看详情、记忆和最近事件。</div>
           )}
-        </div>
-    </div>
+        </section>
+      </div>
+    </aside>
   );
+}
+
+const panelStyle: CSSProperties = {
+  ...centeredWindowStyle(760, 840),
+};
+
+const headerStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "14px 14px 12px",
+  borderBottom: "1px solid rgba(255,255,255,0.1)",
+};
+
+const titleStyle: CSSProperties = {
+  fontSize: 16,
+  fontWeight: 800,
+};
+
+const subtitleStyle: CSSProperties = {
+  marginTop: 3,
+  fontSize: 12,
+  color: "rgba(238,244,255,0.62)",
+};
+
+const closeButtonStyle: CSSProperties = {
+  width: 30,
+  height: 30,
+  border: "1px solid rgba(255,255,255,0.14)",
+  background: "rgba(255,255,255,0.07)",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 20,
+  lineHeight: "26px",
+};
+
+const bodyStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "260px minmax(0, 1fr)",
+  gap: 12,
+  padding: 12,
+  height: "min(580px, calc(100vh - 130px))",
+};
+
+const listStyle: CSSProperties = {
+  minHeight: 0,
+  overflowY: "auto",
+  paddingRight: 4,
+  borderRight: "1px solid rgba(255,255,255,0.08)",
+};
+
+const detailStyle: CSSProperties = {
+  minHeight: 0,
+  overflowY: "auto",
+  paddingRight: 4,
+};
+
+const npcNameStyle: CSSProperties = {
+  fontSize: 13,
+  fontWeight: 800,
+  color: "#fff",
+  whiteSpace: "nowrap",
+};
+
+const npcRoleStyle: CSSProperties = {
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  color: "rgba(238,244,255,0.55)",
+  fontSize: 11,
+};
+
+const npcActionStyle: CSSProperties = {
+  color: "rgba(238,244,255,0.45)",
+  fontSize: 11,
+  whiteSpace: "nowrap",
+};
+
+const emptyStyle: CSSProperties = {
+  padding: 18,
+  border: "1px dashed rgba(255,255,255,0.12)",
+  borderRadius: 10,
+  color: "rgba(238,244,255,0.58)",
+  fontSize: 12,
+  lineHeight: 1.6,
+};
+
+function npcRowStyle(selected: boolean): CSSProperties {
+  return {
+    width: "100%",
+    display: "grid",
+    gridTemplateColumns: "auto minmax(0, 1fr)",
+    gridTemplateRows: "auto auto",
+    alignItems: "center",
+    columnGap: 8,
+    rowGap: 3,
+    marginBottom: 6,
+    padding: "9px 10px",
+    borderRadius: 10,
+    border: selected ? "1px solid rgba(125,212,255,0.34)" : "1px solid rgba(255,255,255,0.08)",
+    background: selected ? "rgba(88,172,255,0.16)" : "rgba(255,255,255,0.045)",
+    color: "#eef4ff",
+    cursor: "pointer",
+    textAlign: "left",
+  };
 }

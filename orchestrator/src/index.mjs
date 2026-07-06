@@ -17,6 +17,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../..");
 dotenv.config({ path: join(ROOT, ".env") });
 
+function resolveDataDir() {
+  const configured = process.env.WORLDX_DATA_DIR?.trim();
+  return configured ? resolve(ROOT, configured) : join(ROOT, "output");
+}
+
 import { designWorld } from "./world-designer.mjs";
 import { generateConfigs } from "./config-generator.mjs";
 
@@ -38,7 +43,7 @@ async function main() {
   }
 
   const worldId = `world_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
-  const worldDir = join(ROOT, "output/worlds", worldId);
+  const worldDir = join(resolveDataDir(), "worlds", worldId);
   mkdirSync(worldDir, { recursive: true });
   const logsDir = join(worldDir, "logs");
   mkdirSync(logsDir, { recursive: true });

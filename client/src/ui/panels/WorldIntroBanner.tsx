@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
+import { darkGlassPanelStyle } from "../components/panel-styles";
 
 const AUTO_HIDE_MS = 8000;
 const FADE_MS = 420;
@@ -81,10 +82,7 @@ export function WorldIntroBanner({
       width: "min(720px, calc(100vw - 32px))",
       padding: "14px 16px 14px 18px",
       borderRadius: 16,
-      border: "1px solid rgba(255,255,255,0.14)",
-      background: "linear-gradient(180deg, rgba(16,22,45,0.96), rgba(12,18,36,0.92))",
-      boxShadow: "0 18px 48px rgba(0,0,0,0.38)",
-      backdropFilter: "blur(14px)",
+      ...darkGlassPanelStyle,
       color: "#eef3ff",
       opacity: visible ? 1 : 0,
       transition: `opacity ${FADE_MS}ms ease, transform ${FADE_MS}ms ease`,

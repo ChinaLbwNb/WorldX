@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { CharacterSprite } from "../objects/CharacterSprite";
 import { createCharacterDisplayMetrics, SPRITE_FRAME_HEIGHT, SPRITE_FRAME_WIDTH } from "../config/game-config";
+import { withAssetAuth } from "../utils/asset-url";
 
 const REMOTE_PLAYER_COLORS = [0x74b9ff, 0x00b894, 0xe17055, 0xfd79a8, 0xfdcb6e, 0x6c5ce7];
 
@@ -24,6 +25,7 @@ export class RemotePlayerManager {
   private displayMetrics: ReturnType<typeof createCharacterDisplayMetrics>;
   private nextColorIndex = 0;
   private borrowedSpriteIds: string[] = [];
+  private playerVersions = new Map<string, number>();
 
   constructor(
     scene: Phaser.Scene,
@@ -45,7 +47,9 @@ export class RemotePlayerManager {
   }
 
   private async addPlayerAsync(data: RemotePlayerData): Promise<void> {
-    // 已存在（如改名后重新广播 player_joined）：更新名字与位置，不重复创建精灵
+    const version = (this.playerVersions.get(data.id) ?? 0) + 1;
+    this.playerVersions.set(data.id, version);
+      // 已存在（如改名后重新广播 user_character_joined）：更新名字与位置，不重复创建精灵
     const existing = this.sprites.get(data.id);
     if (existing) {
       existing.sprite.setDisplayName(data.name);
@@ -59,6 +63,9 @@ export class RemotePlayerManager {
 
     // 借用 NPC 精灵图：优先用传入的，其次用列表中循环的，最后扫描纹理
     const ownSpriteId = await this.ensureUserCharacterTexture(data);
+    if (this.playerVersions.get(data.id) !== version || this.sprites.has(data.id)) {
+      return;
+    }
     const spriteId =
       ownSpriteId
       ?? data.borrowedSpriteId
@@ -85,7 +92,7 @@ export class RemotePlayerManager {
     if (!spriteUrl || !spriteKey) return null;
     if (this.scene.textures.exists(spriteKey)) return spriteKey;
     return new Promise((resolve) => {
-      this.scene.load.spritesheet(spriteKey, spriteUrl, {
+      this.scene.load.spritesheet(spriteKey, withAssetAuth(spriteUrl), {
         frameWidth: SPRITE_FRAME_WIDTH,
         frameHeight: SPRITE_FRAME_HEIGHT,
       });
@@ -103,6 +110,7 @@ export class RemotePlayerManager {
   }
 
   removePlayer(playerId: string): void {
+    this.playerVersions.set(playerId, (this.playerVersions.get(playerId) ?? 0) + 1);
     const entry = this.sprites.get(playerId);
     if (entry) {
       entry.sprite.destroy();
@@ -159,6 +167,7 @@ export class RemotePlayerManager {
     }
     this.sprites.clear();
     this.nextColorIndex = 0;
+    this.playerVersions.clear();
   }
 
   destroy(): void {

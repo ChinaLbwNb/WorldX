@@ -87,7 +87,7 @@ type MapSpawnPoint = {
 
 type WorldConfig = {
   activeMapId: string;
-  worldMaps: WorldMapNode[];
+  mapNodes: WorldMapNode[];
   mapLinks: WorldMapLink[];
   mapSpawnPoints: MapSpawnPoint[];
 };
@@ -169,7 +169,7 @@ GET /api/world/maps
 ### 传送到已有地图
 
 ```http
-POST /api/world/map/travel
+POST /api/world/map/enter
 body: { targetMapId: string }
 ```
 
@@ -234,7 +234,7 @@ MapNodeContract
   -> collision grid extraction
   -> local semantic validation
   -> write maps/<mapId> package
-  -> append worldMaps/spawnPoints
+  -> append mapNodes/spawnPoints
   -> frontend map UI refresh
 ```
 
@@ -324,7 +324,7 @@ type MapNodeContract = {
 
 新增 `WorldMapPanel`：
 
-- 以网格或节点图展示 `worldMaps`。
+- 以网格或节点图展示 `mapNodes`。
 - 当前地图高亮。
 - `available` 地图可点击传送。
 - `generating` 地图显示进度，不可传送。
@@ -390,7 +390,7 @@ resourceManager.rediscoverForMap(activeMapId)
    - `expansionExits`
    - `expansion-contract.json`
    - 拼接扩展临时目录和中间图
-4. 初始化 `worldMaps=[map_origin]`、`activeMapId=map_origin`、空 `mapLinks`。
+4. 初始化 `mapNodes=[map_origin]`、`activeMapId=map_origin`、空 `mapLinks`。
 5. 玩家和 NPC 放回 `map_origin` 默认出生点或原图内最近可走点。
 
 删除动作必须在实施阶段显式备份后执行：
@@ -417,7 +417,7 @@ backups/
 
 ### Phase 1：数据结构和原图归档
 
-- 新增 `worldMaps`、`activeMapId`、`mapLinks`、`mapSpawnPoints` 类型。
+- 新增 `mapNodes`、`activeMapId`、`mapLinks`、`mapSpawnPoints` 类型。
 - 实现一次性初始化脚本：把当前原图迁移到 `maps/map_origin/`。
 - 清理旧扩展图的计划先 dry-run，打印将删除/归档的文件。
 - 生成 `map_origin/metadata.json` 和 `map_origin/world-fragment.json`。
@@ -444,7 +444,7 @@ backups/
 ### Phase 3：地图 UI 传送
 
 - 新增 `GET /api/world/maps`。
-- 新增 `POST /api/world/map/travel`。
+- 新增 `POST /api/world/map/enter`。
 - 新增前端 `WorldMapPanel`。
 - 玩家状态和 websocket payload 带 `mapId`。
 - 客户端只显示同地图实体。
@@ -459,7 +459,7 @@ backups/
 
 - 新增 `MapNodeContract`。
 - 新增或改造扩展脚本，让它输出 `maps/<targetMapId>/`，不拼接旧图。
-- 生成完成后只追加 `worldMaps`、`mapLinks`、`mapSpawnPoints`。
+- 生成完成后只追加 `mapNodes`、`mapLinks`、`mapSpawnPoints`。
 - 扩展方向只影响地图拓扑和 prompt 语义。
 - 视觉审查改为独立地图评分。
 - 程序化验证失败时删除新地图临时目录，不污染 `world.json`。
@@ -497,10 +497,10 @@ backups/
 ### API 测试
 
 - `GET /api/world/maps` 返回地图节点和 activeMapId。
-- `POST /api/world/map/travel { targetMapId }` 能切换到已有地图。
+- `POST /api/world/map/enter { userCharacterId, mapId }` 能切换该用户角色到已有地图。
 - `POST /api/build/map/expand { prompt }` 创建独立地图生成 job。
 - job 失败不会修改 `world.json`。
-- job 成功后 `worldMaps` 多一个节点，`mapSpawnPoints` 多一个出生点。
+- job 成功后 `mapNodes` 多一个节点，`mapSpawnPoints` 多一个出生点。
 
 ### 浏览器模拟用户测试
 
@@ -558,8 +558,8 @@ backups/
 
 - 旧世界启动时会自动把当前 `map/` 复制为 `maps/map_origin/`。
 - `GET /api/world/maps` 返回世界地图节点和当前 active map。
-- `POST /api/world/map/travel` 可以把 active map 切到已有节点，并要求前端刷新。
-- 在线 `POST /api/build/map/expand` 已停止调用旧拼接大图脚本，改为根据用户 prompt 创建独立地图节点包并追加 `worldMaps/mapSpawnPoints`。
+- `POST /api/world/map/enter` 可以把指定用户角色切到已有节点，并要求前端刷新。
+- 在线 `POST /api/build/map/expand` 已停止调用旧拼接大图脚本，改为根据用户 prompt 创建独立地图节点包并追加 `mapNodes/mapSpawnPoints`。
 - `BootScene`、小地图和静态资源路由已支持 `/assets/maps/<mapId>/...`。
 - `MapExpander` 调用 `generators/map/src/generate-map-node.mjs` 生成真实独立地图包，不再复制源地图。
 - 地图节点生成会先写入 `<targetDir>.tmp-*`，视觉审查和程序化验证通过后才 rename 到正式目录。

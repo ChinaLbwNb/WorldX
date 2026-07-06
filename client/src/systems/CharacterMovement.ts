@@ -241,7 +241,7 @@ export class CharacterMovement {
     this.nextAmbientScanAt = now + 1000;
 
     for (const [charId, sprite] of this.sprites) {
-      if (charId === "player_1") continue; // 玩家由 PlayerController 控制
+      if (charId === "player_1") continue; // 旧默认用户角色由 UserCharacterController 控制
       if (!sprite.canAmbientWander()) continue;
 
       const nextMoveAt = this.ambientMoveCooldownUntil.get(charId);

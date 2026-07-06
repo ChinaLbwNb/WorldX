@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import type Phaser from "phaser";
-import { EventBus } from "../../EventBus";
 import { networkManager } from "../../systems/NetworkManager";
 import { apiClient, type UserCharacterInfo } from "../services/api-client";
+import type { BuildState } from "../../types/api";
+import { withAssetAuth } from "../../utils/asset-url";
+import { centeredWindowStyle, useFloatingWindowZIndex } from "../components/panel-styles";
+import { GenerationProgress, useLocalGenerationProgress } from "../components/GenerationProgress";
 
 export function UserCharactersPanel({
   open,
@@ -22,6 +25,9 @@ export function UserCharactersPanel({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [currentCharacterId, setCurrentCharacterId] = useState(() => networkManager.getSelectedUserCharacterId());
+  const [buildState, setBuildState] = useState<BuildState | null>(null);
+  const { zIndex, bringToFront } = useFloatingWindowZIndex(open, 840);
+  const characterGenerationProgress = useLocalGenerationProgress();
 
   const selectedCharacter = useMemo(
     () => characters.find((character) => character.id === selectedId) ?? null,
@@ -33,7 +39,9 @@ export function UserCharactersPanel({
     setError("");
     try {
       const response = await apiClient.getUserCharacters();
+      const state = await apiClient.getBuildState(networkManager.getSelectedUserCharacterId() || undefined).catch(() => null);
       setCharacters(response.characters);
+      setBuildState(state);
       setSelectedId((current) => current || networkManager.getSelectedUserCharacterId() || response.characters[0]?.id || "");
       setCurrentCharacterId(networkManager.getSelectedUserCharacterId());
     } catch (err) {
@@ -47,26 +55,48 @@ export function UserCharactersPanel({
 
   if (!open) return null;
 
+  const resources = buildState?.resources ?? 0;
+  const characterCost = buildState?.costs.character ?? 20;
+  const canAffordCharacter = resources >= characterCost;
+
   const createCharacter = async () => {
     const name = prompt.trim().slice(0, 24);
     if (!name || generating) {
       setError("请输入你想生成的角色名称或简短描述。");
       return;
     }
+    if (!canAffordCharacter) {
+      setError(`资源不足：生成角色需要 💎 ${characterCost}，当前只有 💎 ${resources}。`);
+      return;
+    }
     setGenerating(true);
     setError("");
     setNotice("");
+    characterGenerationProgress.start("开始生成用户角色：提交角色描述。");
+    characterGenerationProgress.mark(24, "等待角色形象生成、裁切和资产入库。");
     try {
       const response = await apiClient.createUserCharacter(name, {
         prompt: prompt.trim(),
         generateAppearance: true,
       });
+      characterGenerationProgress.mark(86, "生成服务已返回，正在写入账号角色资产。");
       setCharacters((prev) => [response.character, ...prev.filter((item) => item.id !== response.character.id)]);
+      setBuildState((prev) =>
+        prev && typeof response.resources === "number"
+          ? { ...prev, resources: response.resources }
+          : prev
+      );
+      if (buildState && typeof response.resources === "number") {
+        eventBus.emit("build_state_updated", { ...buildState, resources: response.resources });
+      }
       setSelectedId(response.character.id);
       setPrompt("");
-      setNotice(`已生成角色：${response.character.name}。点击角色格子只会选中查看，点“应用”才会切换操控。`);
+      setNotice(`已生成角色：${response.character.name}，消耗 💎 ${response.cost ?? characterCost}。点击角色格子只会选中查看，点“应用”才会切换操控。`);
+      characterGenerationProgress.finish(`完成：${response.character.name}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      characterGenerationProgress.fail(`失败：${message}`);
     } finally {
       setGenerating(false);
     }
@@ -79,15 +109,16 @@ export function UserCharactersPanel({
     setError("");
     setNotice("");
     try {
-      const entered = await apiClient.selectUserCharacter(character.id);
-      networkManager.setIdentity(entered.character.name, networkManager.getStoredCode());
+      const entered = await apiClient.selectUserCharacter(
+        character.id,
+        networkManager.getSelectedUserCharacterId() || undefined,
+      );
+      networkManager.setIdentity(entered.character.name);
       networkManager.setSelectedUserCharacter(entered.character.id, entered.character.name);
       setCurrentCharacterId(entered.character.id);
       networkManager.reconnect();
       eventBus.emit("local_user_character_changed", entered.character);
-      EventBus.instance.emit("local_user_character_changed", entered.character);
       eventBus.emit("focus_user_character");
-      EventBus.instance.emit("focus_user_character");
       setNotice(`已切换到：${entered.character.name}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -149,7 +180,7 @@ export function UserCharactersPanel({
   };
 
   return (
-    <aside style={panelStyle}>
+    <aside style={{ ...panelStyle, zIndex }} onPointerDown={bringToFront}>
       <header style={headerStyle}>
         <div>
           <div style={titleStyle}>我的角色</div>
@@ -159,6 +190,11 @@ export function UserCharactersPanel({
       </header>
 
       <section style={generatorStyle}>
+        <div style={costHintStyle(canAffordCharacter)}>
+          <span>生成角色</span>
+          <strong>💎 {characterCost}</strong>
+          <span>当前 💎 {resources}</span>
+        </div>
         <input
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
@@ -171,17 +207,25 @@ export function UserCharactersPanel({
         />
         <button
           onClick={() => void createCharacter()}
-          disabled={generating}
+          disabled={generating || !canAffordCharacter}
           style={{
             ...generateButtonStyle,
-            opacity: generating ? 0.65 : 1,
-            cursor: generating ? "default" : "pointer",
+            opacity: generating || !canAffordCharacter ? 0.65 : 1,
+            cursor: generating || !canAffordCharacter ? "default" : "pointer",
           }}
-          title="生成一个可操控的用户角色"
+          title={canAffordCharacter ? "消耗资源生成一个可操控的用户角色" : "资源不足，无法生成角色"}
         >
-          {generating ? "生成中" : "生成"}
+          {generating ? "生成中" : canAffordCharacter ? "生成" : "资源不足"}
         </button>
       </section>
+
+      {characterGenerationProgress.active && (
+        <GenerationProgress
+          title="角色生成进度"
+          progress={characterGenerationProgress.progress}
+          logs={characterGenerationProgress.logs}
+        />
+      )}
 
       {notice && <div style={noticeStyle}>{notice}</div>}
       {error && <div style={errorStyle}>{error}</div>}
@@ -209,7 +253,7 @@ export function UserCharactersPanel({
                   <div style={avatarFrameStyle}>
                     {character.appearance?.spriteUrl ? (
                       <img
-                        src={character.appearance.spriteUrl}
+                        src={withAssetAuth(character.appearance.spriteUrl)}
                         alt={character.name}
                         style={avatarImageStyle}
                       />
@@ -266,20 +310,7 @@ export function UserCharactersPanel({
 }
 
 const panelStyle: CSSProperties = {
-  position: "fixed",
-  right: 18,
-  top: "calc(var(--top-ui-offset, 52px) + 14px)",
-  width: 340,
-  maxWidth: "calc(100vw - 36px)",
-  maxHeight: "calc(100vh - var(--top-ui-offset, 52px) - 28px)",
-  zIndex: 790,
-  pointerEvents: "auto",
-  border: "1px solid rgba(255,255,255,0.12)",
-  background: "rgba(17, 22, 32, 0.95)",
-  boxShadow: "0 18px 45px rgba(0,0,0,0.42)",
-  color: "#eef4ff",
-  fontFamily: "system-ui, sans-serif",
-  overflow: "hidden",
+  ...centeredWindowStyle(620, 840),
 };
 
 const headerStyle: CSSProperties = {
@@ -318,6 +349,18 @@ const generatorStyle: CSSProperties = {
   gap: 8,
   padding: "12px 12px 0",
 };
+
+const costHintStyle = (canAfford: boolean): CSSProperties => ({
+  gridColumn: "1 / -1",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  minHeight: 24,
+  padding: "0 2px",
+  color: canAfford ? "rgba(238,244,255,0.76)" : "#ffb8b8",
+  fontSize: 12,
+});
 
 const inputStyle: CSSProperties = {
   minWidth: 0,

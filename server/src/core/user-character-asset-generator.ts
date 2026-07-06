@@ -4,12 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PlayerAppearance } from "../types/index.js";
 import { getAccountAssetDir } from "../utils/account-assets.js";
+import { getDataDir } from "../utils/data-dir.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SERVER_ROOT = path.resolve(__dirname, "../..");
 const GENERATOR_SCRIPT = path.resolve(SERVER_ROOT, "../generators/character/src/index.mjs");
-const GENERATOR_OUTPUT_DIR = path.resolve(SERVER_ROOT, "../output/characters");
+const GENERATOR_OUTPUT_DIR = getDataDir("characters");
 
 export type UserCharacterAssetResult = {
   appearance: PlayerAppearance;
@@ -91,7 +92,7 @@ function runCharacterGenerator(params: {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
+      env: { ...process.env, CHAR_OUTPUT_DIR: GENERATOR_OUTPUT_DIR },
     });
     let stdout = "";
     let stderr = "";

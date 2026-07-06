@@ -255,28 +255,52 @@ function extractImageBuffer(data) {
   const message = data.choices?.[0]?.message;
   if (!message) throw new Error("No message in Image Gen response");
 
-  if (message.images && message.images.length > 0) {
-    const url = message.images[0].image_url.url;
-    const b64 = url.replace(/^data:image\/\w+;base64,/, "");
-    return Buffer.from(b64, "base64");
-  }
+  const direct = findDataImageBuffer(message);
+  if (direct) return direct;
 
   if (message.content && typeof message.content === "string") {
     const match = message.content.match(/data:image\/\w+;base64,([A-Za-z0-9+/=]+)/);
     if (match) return Buffer.from(match[1], "base64");
   }
 
-  if (Array.isArray(message.content)) {
-    for (const part of message.content) {
-      if (part.type === "image_url") {
-        const url = part.image_url?.url || "";
-        const b64 = url.replace(/^data:image\/\w+;base64,/, "");
-        if (b64) return Buffer.from(b64, "base64");
-      }
-    }
-  }
+  const nested = findDataImageBuffer(message.content);
+  if (nested) return nested;
 
-  throw new Error("No image found in Image Gen response");
+  throw new Error(`No image found in Image Gen response (${summarizeImageResponse(data)})`);
+}
+
+function findDataImageBuffer(value) {
+  if (!value) return null;
+  if (typeof value === "string") {
+    const match = value.match(/data:image\/[\w.+-]+;base64,([A-Za-z0-9+/=]+)/);
+    return match ? Buffer.from(match[1], "base64") : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findDataImageBuffer(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  const candidates = [
+    value.url,
+    value.image_url?.url,
+    value.imageUrl?.url,
+    value.image,
+    value.b64_json ? `data:image/png;base64,${value.b64_json}` : "",
+    value.base64 ? `data:image/png;base64,${value.base64}` : "",
+    value.data && typeof value.data === "string" ? `data:image/png;base64,${value.data}` : "",
+  ];
+  for (const candidate of candidates) {
+    const found = findDataImageBuffer(candidate);
+    if (found) return found;
+  }
+  for (const key of ["images", "content", "output", "parts"]) {
+    const found = findDataImageBuffer(value[key]);
+    if (found) return found;
+  }
+  return null;
 }
 
 function extractGoogleNativeImageBuffer(data) {
@@ -294,4 +318,26 @@ function extractGoogleNativeImageBuffer(data) {
   }
 
   throw new Error("No image found in Google native Image Gen response");
+}
+
+function summarizeImageResponse(data) {
+  try {
+    const message = data?.choices?.[0]?.message;
+    const content = message?.content;
+    const finishReason = data?.choices?.[0]?.finish_reason || data?.choices?.[0]?.finishReason || "";
+    let text = "";
+    if (typeof content === "string") {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .map((part) => part?.text || part?.content || "")
+        .filter(Boolean)
+        .join(" ");
+    }
+    const keys = message ? Object.keys(message).join(",") : "no-message";
+    const preview = text.replace(/\s+/g, " ").slice(0, 240);
+    return `finish=${finishReason || "unknown"} messageKeys=${keys}${preview ? ` text="${preview}"` : ""}`;
+  } catch {
+    return "unrecognized response shape";
+  }
 }

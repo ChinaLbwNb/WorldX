@@ -202,6 +202,8 @@ SIMULATION_MODEL=deepseek-chat
 <img src="docs/chart1_en.png"/>
 <img src="docs/chart2_en.png"/>
 
+See [Complete System Architecture](docs/architecture.md) for the current account, world, map-node, timeline, multiplayer, item, generation, and runtime architecture.
+
 ## Project Structure
 
 ```

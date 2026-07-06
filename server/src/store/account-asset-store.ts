@@ -1,6 +1,8 @@
 import { getAuthDb } from "./auth-store.js";
 
 const DEFAULT_ACCOUNT_RESOURCES = 10;
+export type WorldMemberRole = "admin" | "builder" | "viewer";
+export type WorldPermission = "manage" | "build" | "view";
 
 function assertAccountUserId(userId: string): string {
   const value = typeof userId === "string" ? userId.trim() : "";
@@ -72,6 +74,7 @@ export function ensureWorldAsset(input: {
   createdAt?: string;
 }): void {
   const accountUserId = assertAccountUserId(input.userId);
+  if (!authUserExists(accountUserId)) return;
   getAuthDb()
     .prepare(
       `INSERT INTO account_world_assets
@@ -89,6 +92,13 @@ export function ensureWorldAsset(input: {
       input.visibility ?? "private",
       input.createdAt ?? new Date().toISOString(),
     );
+}
+
+function authUserExists(userId: string): boolean {
+  const row = getAuthDb()
+    .prepare("SELECT 1 FROM auth_users WHERE id = ?")
+    .get(userId);
+  return Boolean(row);
 }
 
 export function userOwnsWorld(userId: string, worldId: string): boolean {
@@ -122,6 +132,81 @@ export function deleteWorldAsset(userId: string, worldId: string): void {
        WHERE user_id = ? AND world_id = ?`,
     )
     .run(accountUserId, worldId);
+}
+
+export function ensureWorldMember(input: {
+  worldId: string;
+  userId: string;
+  role?: WorldMemberRole | "member" | "guest";
+  invitedByUserId?: string;
+}): void {
+  const accountUserId = assertAccountUserId(input.userId);
+  const role = normalizeWorldMemberRole(input.role);
+  getAuthDb()
+    .prepare(
+      `INSERT INTO account_world_members
+       (world_id, user_id, role, invited_by_user_id, updated_at)
+       VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(world_id, user_id) DO UPDATE SET
+         role = excluded.role,
+         invited_by_user_id = excluded.invited_by_user_id,
+         updated_at = excluded.updated_at`,
+    )
+    .run(input.worldId, accountUserId, role, input.invitedByUserId ?? null);
+}
+
+export function removeWorldMember(worldId: string, userId: string): void {
+  const accountUserId = assertAccountUserId(userId);
+  getAuthDb()
+    .prepare("DELETE FROM account_world_members WHERE world_id = ? AND user_id = ?")
+    .run(worldId, accountUserId);
+}
+
+export function userIsWorldMember(userId: string, worldId: string): boolean {
+  const accountUserId = assertAccountUserId(userId);
+  const row = getAuthDb()
+    .prepare("SELECT 1 FROM account_world_members WHERE world_id = ? AND user_id = ?")
+    .get(worldId, accountUserId);
+  return Boolean(row);
+}
+
+export function getWorldMemberRole(worldId: string, userId: string): WorldMemberRole | null {
+  const accountUserId = assertAccountUserId(userId);
+  const row = getAuthDb()
+    .prepare("SELECT role FROM account_world_members WHERE world_id = ? AND user_id = ?")
+    .get(worldId, accountUserId) as { role?: string } | undefined;
+  return row ? normalizeWorldMemberRole(row.role) : null;
+}
+
+export function worldMemberHasPermission(role: WorldMemberRole | null, permission: WorldPermission): boolean {
+  if (!role) return false;
+  if (permission === "view") return true;
+  if (permission === "build") return role === "admin" || role === "builder";
+  return role === "admin";
+}
+
+export function listWorldMembers(worldId: string): Array<{ userId: string; role: WorldMemberRole; invitedByUserId: string | null; createdAt: string }> {
+  return (
+    getAuthDb()
+      .prepare(
+        `SELECT user_id, role, invited_by_user_id, created_at
+         FROM account_world_members
+         WHERE world_id = ?
+         ORDER BY created_at ASC`,
+      )
+      .all(worldId) as any[]
+  ).map((row) => ({
+    userId: row.user_id,
+    role: normalizeWorldMemberRole(row.role),
+    invitedByUserId: row.invited_by_user_id ?? null,
+    createdAt: row.created_at ?? "",
+  }));
+}
+
+export function normalizeWorldMemberRole(role: unknown): WorldMemberRole {
+  if (role === "admin" || role === "builder" || role === "viewer") return role;
+  if (role === "guest") return "viewer";
+  return "builder";
 }
 
 export function userCanAccessAccountAsset(userId: string, assetPath: string): boolean {

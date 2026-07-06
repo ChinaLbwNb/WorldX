@@ -2,6 +2,8 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { getRequestUserId, normalizeUserId } from "../request-user.js";
 import * as authStore from "../../store/auth-store.js";
+import { deleteAccountCascade } from "../../store/account-deletion-store.js";
+import { appContext } from "../../services/app-context.js";
 
 const router = Router();
 
@@ -62,9 +64,16 @@ router.delete("/:id", (req: Request, res: Response) => {
     res.status(403).json({ error: "Accounts can only delete themselves" });
     return;
   }
-  res.status(409).json({
-    error: "Account deletion is not enabled yet. Delete or transfer worlds, characters, items, timelines, and sessions first.",
-  });
+  try {
+    const result = deleteAccountCascade({
+      userId: currentUserId,
+      activeWorldDir: appContext.getWorldDir(),
+    });
+    res.clearCookie("worldx_session", { path: "/" });
+    res.json({ ok: true, result });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 export default router;

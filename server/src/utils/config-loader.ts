@@ -44,27 +44,43 @@ export function loadWorldConfig(): WorldConfig {
 export function loadCharacterProfiles(): CharacterProfile[] {
   if (cachedCharacterProfiles) return cachedCharacterProfiles;
 
-  const candidates = [
+  cachedCharacterProfiles = loadCharacterProfilesFromCandidates([
     worldDir ? path.join(worldDir, "config", "characters") : null,
     worldDir ? path.join(worldDir, "characters") : null,
     path.join(CONFIGS_DIR, "characters"),
-  ].filter(Boolean) as string[];
+  ].filter(Boolean) as string[]);
 
+  if (cachedCharacterProfiles.length > 0) {
+    return cachedCharacterProfiles;
+  }
+  throw new Error("Characters directory not found");
+}
+
+export function loadCharacterProfilesFromWorldDir(dir: string): CharacterProfile[] {
+  const profiles = loadCharacterProfilesFromCandidates([
+    path.join(dir, "config", "characters"),
+    path.join(dir, "characters"),
+  ]);
+  if (profiles.length > 0) return profiles;
+  throw new Error(`Characters directory not found: ${dir}`);
+}
+
+function loadCharacterProfilesFromCandidates(candidates: string[]): CharacterProfile[] {
   for (const dir of candidates) {
     if (fs.existsSync(dir!)) {
       const files = fs.readdirSync(dir!).filter((f) => f.endsWith(".json"));
-      cachedCharacterProfiles = files
+      const profiles = files
         .map((f) => {
         const raw = fs.readFileSync(path.join(dir!, f), "utf-8");
           return normalizeCharacterProfile(JSON.parse(raw));
         })
         .filter(Boolean) as CharacterProfile[];
-      if (cachedCharacterProfiles.length > 0) {
-      return cachedCharacterProfiles;
+      if (profiles.length > 0) {
+      return profiles;
       }
     }
   }
-  throw new Error("Characters directory not found");
+  return [];
 }
 
 export function loadSceneConfig(): SceneConfig {

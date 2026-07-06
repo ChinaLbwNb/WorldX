@@ -1,0 +1,70 @@
+[
+  {
+    "id": "resource_map_1_0_mr4wd4od_supply",
+    "name": "水源",
+    "description": "可采集的资源点。",
+    "visualDescription": "宝箱、木材、矿石、药草、水井或符合世界观的资源物件",
+    "placementHint": "放在可行走道路边，靠近中心区域",
+    "interactions": [
+      {
+        "id": "collect_map_1_0_mr4wd4od_supply",
+        "name": "采集资源",
+        "description": "采集这个区域的资源。",
+        "availableWhenState": [
+          "available"
+        ],
+        "duration": 1,
+        "effects": [
+          {
+            "type": "world_state",
+            "target": "player_resources",
+            "value": 1
+          }
+        ],
+        "repeatable": true
+      }
+    ],
+    "topLeft": {
+      "x": 98,
+      "y": 336
+    },
+    "bottomRight": {
+      "x": 165,
+      "y": 433
+    }
+  },
+  {
+    "id": "map_1_0_mr4wd4od_detail",
+    "name": "篝火台",
+    "description": "提供区域叙事线索的可交互物件。",
+    "visualDescription": "无文字的祭器、工具堆、货箱、灯架、破损器械、雕像或符合世界观的小物件",
+    "placementHint": "靠近道路或地标入口",
+    "interactions": [
+      {
+        "id": "inspect_map_1_0_mr4wd4od_notice",
+        "name": "查看线索",
+        "description": "查看该区域的信息。",
+        "availableWhenState": [
+          "available"
+        ],
+        "duration": 1,
+        "effects": [
+          {
+            "type": "character_memory",
+            "target": "clue",
+            "value": 1
+          }
+        ],
+        "repeatable": true
+      }
+    ],
+    "topLeft": {
+      "x": 378,
+      "y": 362
+    },
+    "bottomRight": {
+      "x": 447,
+      "y": 433
+    }
+  }
+]

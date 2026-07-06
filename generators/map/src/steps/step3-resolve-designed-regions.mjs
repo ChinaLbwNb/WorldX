@@ -50,6 +50,72 @@ function normalizeSuggestedBox(box, imageWidth, imageHeight) {
   return { topLeft: { x: x1, y: y1 }, bottomRight: { x: x2, y: y2 } };
 }
 
+function parseJsonObject(raw) {
+  const match = String(raw || "").match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : JSON.parse(raw);
+}
+
+async function locateRegionsWithVision({ regions, userPrompt, mapDescription, imageBuffer, imageWidth, imageHeight, logStep, additionalConstraints }) {
+  if (process.env.STEP3_VISION_BBOX_FALLBACK === "0" || regions.length === 0) return [];
+  const list = regions.map((region, index) => [
+    `${index + 1}. ${region.name} (${region.id})`,
+    `   - 类型：${region.type}${region.enterable ? " / 可进入" : ""}`,
+    `   - 位置提示：${region.placementHint || "未指定"}`,
+    `   - 外观提示：${region.visualDescription || region.description || "未指定"}`,
+    `   - 说明：${region.description || "无"}`,
+  ].join("\n")).join("\n");
+  const prompt = [
+    "你是游戏地图区域定位器。请直接在给定地图原图中定位功能区域，返回 JSON 坐标，不要返回解释。",
+    "",
+    `地图尺寸：${imageWidth} x ${imageHeight}`,
+    "坐标系：左上角为 (0,0)，x 向右，y 向下。",
+    "",
+    "原始需求：",
+    userPrompt,
+    "",
+    "地图描述：",
+    mapDescription,
+    "",
+    "需要定位的区域：",
+    list,
+    "",
+    "规则：",
+    "- 每个区域返回一个轴对齐矩形 bbox。",
+    "- 室内区域只框室内主要可活动地板，不要框外墙、门外道路或台阶。",
+    "- 室外区域只框核心功能范围。",
+    "- 不确定时宁小勿大。",
+    "- 如果无法确认某个区域，放入 missing_region_ids，不要硬猜。",
+    additionalConstraints ? `\n额外修正要求：\n${additionalConstraints}` : "",
+    "",
+    "只返回如下 JSON：",
+    `{"regions":[{"id":"region_id","topLeft":{"x":0,"y":0},"bottomRight":{"x":100,"y":100}}],"missing_region_ids":[]}`,
+  ].join("\n");
+  try {
+    const raw = await geminiProVision(prompt, [imageBuffer], {
+      logStep,
+      requestTimeoutMs: parseInt(process.env.STEP3_VISION_BBOX_TIMEOUT_MS || "90000", 10),
+      temperature: 0.1,
+    });
+    const parsed = parseJsonObject(raw);
+    const boxes = Array.isArray(parsed.regions) ? parsed.regions : [];
+    return boxes.map((box) => {
+      const region = regions.find((candidate) => candidate.id === box.id);
+      const normalized = normalizeSuggestedBox(box, imageWidth, imageHeight);
+      if (!region || !normalized) return null;
+      return {
+        id: region.id,
+        name: region.name,
+        type: region.type,
+        topLeft: normalized.topLeft,
+        bottomRight: normalized.bottomRight,
+      };
+    }).filter(Boolean);
+  } catch (error) {
+    console.warn(`[Step 3] Vision bbox fallback failed: ${error.message}`);
+    return [];
+  }
+}
+
 function prepareDesignedRegions(worldDesign) {
   console.log("[Step 3] Preparing predesigned regions...");
   const normalized = normalizeWorldDesign(worldDesign);
@@ -215,27 +281,59 @@ export async function resolveDesignedRegions(compressedBuffer, worldDesign, user
     );
 
     // ── Phase A: Batch overlay via Nano Banana (only for pending regions) ──
-    const batches = chunkArray(pendingRegions, MAX_BATCH_SIZE);
+    let regionsForOverlay = pendingRegions;
+    const visionFirst = process.env.STEP3_VISION_BBOX_FIRST !== "0";
+    if (visionFirst) {
+      console.log(
+        `[Step 3] Attempt ${attempt}: using Vision bbox first for ${pendingRegions.length} pending region(s)...`,
+      );
+      const visionRegions = await locateRegionsWithVision({
+        regions: pendingRegions,
+        userPrompt,
+        mapDescription,
+        imageBuffer: compressedBuffer,
+        imageWidth,
+        imageHeight,
+        logStep: `Step 3 vision bbox first attempt ${attempt}`,
+        additionalConstraints,
+      });
+      const visionMap = new Map(visionRegions.map((d) => [d.id, d]));
+      for (const region of regions) {
+        if ((!region.topLeft || !region.bottomRight) && visionMap.has(region.id)) {
+          const d = visionMap.get(region.id);
+          region.topLeft = d.topLeft;
+          region.bottomRight = d.bottomRight;
+        }
+      }
+      if (visionRegions.length > 0) {
+        console.log(`[Step 3] Attempt ${attempt}: Vision bbox first located ${visionRegions.length} region(s)`);
+      }
+      regionsForOverlay = regions.filter((r) => !r.topLeft || !r.bottomRight);
+    }
+
+    const batches = chunkArray(regionsForOverlay, MAX_BATCH_SIZE);
     console.log(`[Step 3] Split into ${batches.length} batch(es), max ${MAX_BATCH_SIZE} per batch`);
 
     const attemptSave = attempt === 1
       ? save
       : (name, data) => save(name.replace(/\.png$/, `-a${attempt}.png`), data);
 
-    const batchResults = await Promise.all(
-      batches.map((batchRegions, idx) =>
-        processBatch({
-          batchIndex: idx + 1,
-          regions: batchRegions,
-          userPrompt,
-          mapDescription,
-          compressedMap: compressedBuffer,
-          overlayInputMap: overlayWorkingImage.buffer,
-          save: attemptSave,
-          additionalConstraints,
-        }),
-      ),
-    );
+    const batchResults = batches.length === 0
+      ? []
+      : await Promise.all(
+          batches.map((batchRegions, idx) =>
+            processBatch({
+              batchIndex: idx + 1,
+              regions: batchRegions,
+              userPrompt,
+              mapDescription,
+              compressedMap: compressedBuffer,
+              overlayInputMap: overlayWorkingImage.buffer,
+              save: attemptSave,
+              additionalConstraints,
+            }),
+          ),
+        );
 
     const detectedRegions = batchResults.flatMap((r) => r.detectedRegions);
     const detectedMap = new Map(detectedRegions.map((d) => [d.id, d]));
@@ -245,6 +343,34 @@ export async function resolveDesignedRegions(compressedBuffer, worldDesign, user
         const d = detectedMap.get(region.id);
         region.topLeft = d.topLeft;
         region.bottomRight = d.bottomRight;
+      }
+    }
+
+    const missingAfterOverlay = regions.filter((r) => !r.topLeft || !r.bottomRight);
+    if (missingAfterOverlay.length > 0) {
+      console.log(
+        `[Step 3] Attempt ${attempt}: using Vision bbox fallback for ${missingAfterOverlay.length} missing region(s)...`,
+      );
+      const fallbackRegions = await locateRegionsWithVision({
+        regions: missingAfterOverlay,
+        userPrompt,
+        mapDescription,
+        imageBuffer: compressedBuffer,
+        imageWidth,
+        imageHeight,
+        logStep: `Step 3 vision bbox fallback attempt ${attempt}`,
+        additionalConstraints,
+      });
+      const fallbackMap = new Map(fallbackRegions.map((d) => [d.id, d]));
+      for (const region of regions) {
+        if ((!region.topLeft || !region.bottomRight) && fallbackMap.has(region.id)) {
+          const d = fallbackMap.get(region.id);
+          region.topLeft = d.topLeft;
+          region.bottomRight = d.bottomRight;
+        }
+      }
+      if (fallbackRegions.length > 0) {
+        console.log(`[Step 3] Attempt ${attempt}: Vision bbox fallback located ${fallbackRegions.length} region(s)`);
       }
     }
 
@@ -294,8 +420,7 @@ export async function resolveDesignedRegions(compressedBuffer, worldDesign, user
         logStep: `Step 3 confirm attempt ${attempt}`,
         requestTimeoutMs: CONFIRM_TIMEOUT_MS,
       });
-      const match = raw.match(/\{[\s\S]*\}/);
-      confirmResult = match ? JSON.parse(match[0]) : { pass: true, problematic_region_ids: [] };
+      confirmResult = parseJsonObject(raw);
     } catch (e) {
       console.warn(
         `[Step 3] Attempt ${attempt}: confirmation call failed (keeping all detected regions): ${e.message}`,

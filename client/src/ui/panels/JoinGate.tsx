@@ -3,39 +3,43 @@ import type { CSSProperties } from "react";
 import type Phaser from "phaser";
 import { networkManager } from "../../systems/NetworkManager";
 import { apiClient, type GeneratedWorldSummary, type UserCharacterInfo } from "../services/api-client";
+import { darkGlassPanelStyle } from "../components/panel-styles";
 
-/**
- * 联机进入弹窗：收集昵称 + 房间邀请码。
- * - 首次访问（未设置昵称）时显示，让玩家取名。
- * - 服务端因邀请码错误拒绝（join_rejected）时显示并提示。
- * - 连接成功（network_connected）后自动隐藏。
- */
+/** 进入弹窗：选择账号角色和可访问世界。联机邀请在在线玩家面板中处理。 */
 export function JoinGate({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
   const [visible, setVisible] = useState<boolean>(
     () => !networkManager.getSelectedUserCharacterId(),
   );
-  const [code, setCode] = useState<string>(() => networkManager.getStoredCode());
   const [characters, setCharacters] = useState<UserCharacterInfo[]>([]);
   const [worlds, setWorlds] = useState<GeneratedWorldSummary[]>([]);
   const [selectedCharacterId, setSelectedCharacterId] = useState<string>(() => networkManager.getSelectedUserCharacterId());
-  const [selectedWorldId, setSelectedWorldId] = useState<string>(() => new URLSearchParams(window.location.search).get("joinWorld") ?? "");
+  const [selectedWorldId, setSelectedWorldId] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [connecting, setConnecting] = useState<boolean>(false);
 
   const refreshChoices = useCallback(async () => {
     try {
+      const storedUserCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
       const [userChars, worldList] = await Promise.all([
         apiClient.getUserCharacters(),
-        apiClient.getGeneratedWorlds(),
+        apiClient.getGeneratedWorlds(storedUserCharacterId),
       ]);
       const allWorlds = [...worldList.worlds, ...worldList.libraryWorlds];
       setCharacters(userChars.characters);
       setWorlds(allWorlds);
-      setSelectedCharacterId((current) => current || networkManager.getSelectedUserCharacterId() || userChars.characters[0]?.id || "");
+      setSelectedCharacterId((current) => {
+        const stored = networkManager.getSelectedUserCharacterId();
+        const candidate = current || stored;
+        if (candidate && userChars.characters.some((character) => character.id === candidate)) {
+          return candidate;
+        }
+        if (stored && stored === candidate) {
+          networkManager.clearSelectedUserCharacter();
+        }
+        return userChars.characters[0]?.id || "";
+      });
       setSelectedWorldId((current) => {
         if (current && allWorlds.some((world) => world.id === current)) return current;
-        const requestedWorldId = new URLSearchParams(window.location.search).get("joinWorld") ?? "";
-        if (requestedWorldId && allWorlds.some((world) => world.id === requestedWorldId)) return requestedWorldId;
         return worldList.currentWorldId || allWorlds[0]?.id || "";
       });
     } catch (err) {
@@ -55,11 +59,7 @@ export function JoinGate({ eventBus }: { eventBus: Phaser.Events.EventEmitter })
     };
     const onRejected = (data: { reason?: string }) => {
       setConnecting(false);
-      setError(
-        data?.reason === "invalid_code"
-          ? "邀请码错误，请向房主确认后重试"
-          : "加入失败，请重试",
-      );
+      setError(data?.reason === "auth_required" ? "请先登录账号。" : "加入失败，请重试");
       setVisible(true);
     };
     const onKicked = () => {
@@ -69,11 +69,11 @@ export function JoinGate({ eventBus }: { eventBus: Phaser.Events.EventEmitter })
     };
     eventBus.on("network_connected", onConnected);
     eventBus.on("join_rejected", onRejected);
-    eventBus.on("player_kicked", onKicked);
+    eventBus.on("user_character_kicked", onKicked);
     return () => {
       eventBus.off("network_connected", onConnected);
       eventBus.off("join_rejected", onRejected);
-      eventBus.off("player_kicked", onKicked);
+      eventBus.off("user_character_kicked", onKicked);
     };
   }, [eventBus]);
 
@@ -96,8 +96,9 @@ export function JoinGate({ eventBus }: { eventBus: Phaser.Events.EventEmitter })
         return;
       }
       const entered = await apiClient.enterWorldWithUserCharacter(character.id, selectedWorldId);
-      networkManager.setIdentity(entered.character.name, code);
+      networkManager.setIdentity(entered.character.name);
       networkManager.setSelectedUserCharacter(entered.character.id, entered.character.name);
+      eventBus.emit("local_user_character_changed", entered.character);
       networkManager.reconnect();
       if (entered.requiresReload) {
         setTimeout(() => window.location.reload(), 100);
@@ -106,7 +107,7 @@ export function JoinGate({ eventBus }: { eventBus: Phaser.Events.EventEmitter })
       setConnecting(false);
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [characters, code, selectedCharacterId, selectedWorldId]);
+  }, [characters, selectedCharacterId, selectedWorldId]);
 
   if (!visible) return null;
 
@@ -130,9 +131,7 @@ export function JoinGate({ eventBus }: { eventBus: Phaser.Events.EventEmitter })
           maxWidth: "90vw",
           padding: "28px 26px",
           borderRadius: 16,
-          background: "#161b26",
-          border: "1px solid #2a3242",
-          boxShadow: "0 18px 50px rgba(0,0,0,0.5)",
+          ...darkGlassPanelStyle,
           color: "#e8edf5",
           fontFamily: "system-ui, sans-serif",
         }}
@@ -171,17 +170,6 @@ export function JoinGate({ eventBus }: { eventBus: Phaser.Events.EventEmitter })
             <option key={character.id} value={character.id}>{character.name}</option>
           ))}
         </select>
-
-        <label style={{ ...labelStyle, marginTop: 16 }}>
-          房间邀请码 <span style={{ color: "#5b6478" }}>（开放房间可留空）</span>
-        </label>
-        <input
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-          placeholder="向房主索取"
-          style={inputStyle}
-        />
 
         {error && (
           <div style={{ marginTop: 14, fontSize: 13, color: "#ff8080" }}>{error}</div>
@@ -222,8 +210,8 @@ const inputStyle: CSSProperties = {
   boxSizing: "border-box",
   padding: "10px 12px",
   borderRadius: 10,
-  border: "1px solid #2f3849",
-  background: "#0f131c",
+  border: "1px solid rgba(238,244,255,0.12)",
+  background: "rgba(255,255,255,0.05)",
   color: "#e8edf5",
   fontSize: 14,
   outline: "none",

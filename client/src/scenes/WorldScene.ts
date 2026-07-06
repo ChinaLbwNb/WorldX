@@ -11,8 +11,9 @@ import { UserCharacterController } from "../systems/UserCharacterController";
 import { networkManager } from "../systems/NetworkManager";
 import { RemoteUserCharacterManager } from "../systems/RemoteUserCharacterManager";
 import { apiClient } from "../ui/services/api-client";
-import type { InventoryItemInfo, MapItemPlacementInfo } from "../ui/services/api-client";
+import type { InventoryItemInfo, ItemTransferInfo, MapItemPlacementInfo } from "../ui/services/api-client";
 import type { CharacterInfo, DialogueEventData, SimulationEvent, BuildState } from "../types/api";
+import { withAssetAuth } from "../utils/asset-url";
 
 /** 资源点（前端友好字段名，由 API 的 BuildResourceNode 归一化而来）。 */
 interface ResourceNodeNormalized {
@@ -56,7 +57,21 @@ type BackgroundTileManifest = {
 type ItemPlacementMode = {
   item: InventoryItemInfo;
   footprintTiles: { width: number; height: number };
+  visualScale: number;
+  rotation: number;
 };
+
+type ItemTransferEventPayload = {
+  scope?: { worldId: string; timelineId: string; mapId: string };
+  transfer?: ItemTransferInfo;
+  actor?: { userId?: string; userCharacterId?: string };
+  target?: { userId?: string };
+};
+
+const ITEM_PLACEMENT_MIN_VISUAL_SCALE = 0.5;
+const ITEM_PLACEMENT_MAX_VISUAL_SCALE = 3;
+const ITEM_PLACEMENT_VISUAL_SCALE_STEP = 0.1;
+const ITEM_PLACEMENT_ROTATION_STEP_DEG = 15;
 
 // Frontend-only dialogue playback tuning. Search these names to adjust pacing.
 const FRONTEND_DIALOGUE_BUBBLE_MS = 5000;
@@ -115,6 +130,12 @@ export class WorldScene extends Phaser.Scene {
   private loadingItemAssetKeys: Set<string> = new Set();
   private itemActionMenu: Phaser.GameObjects.Container | null = null;
   private itemActionMenuPlacementId: string | null = null;
+  private transferRequestQueue: ItemTransferInfo[] = [];
+  private activeTransferRequest: ItemTransferInfo | null = null;
+  private transferRequestModal: Phaser.GameObjects.Container | null = null;
+  private transferRequestBusy = false;
+  private sceneEventCleanups: Array<() => void> = [];
+  private multiplayerEventCleanups: Array<() => void> = [];
 
   constructor() {
     super("WorldScene");
@@ -168,7 +189,7 @@ export class WorldScene extends Phaser.Scene {
         });
         const mapAssetPrefix = String(this.registry.get("mapAssetPrefix") || "/assets/maps/map_origin");
         for (const tile of missingTiles) {
-          this.load.image(tile.key, `${mapAssetPrefix}/${tile.path}`);
+          this.load.image(tile.key, withAssetAuth(`${mapAssetPrefix}/${tile.path}`));
         }
         this.load.start();
       }
@@ -232,54 +253,56 @@ export class WorldScene extends Phaser.Scene {
     );
 
     this.setupItemPlacementMode();
+    this.setupMapItemRealtimeEvents();
+    this.setupTransferRequestOverlay();
 
     // 先注册多人事件处理器，再连接 WebSocket（避免丢消息）
     this.setupMultiplayerEvents();
-    // 仅当已有昵称（老用户）时自动连接；新用户由 JoinGate 填昵称后再连，
-    // 避免先建一个匿名「旅行者」再改名导致的幽灵玩家 / 重复加入。
-    if (networkManager.getStoredName()) {
+    // 已选用户角色足以复用账号角色身份；昵称仅作为旧入口兼容。
+    // 没有角色也没有昵称时仍交给 JoinGate，避免创建匿名旅行者。
+    if (networkManager.getSelectedUserCharacterId() || networkManager.getStoredName()) {
       networkManager.connect();
     }
 
     this.playbackController = new PlaybackController(this.eventBus);
     this.playbackController.on("event", this.handleSimEvent, this);
 
-    this.eventBus.on("follow_character", (charId: string) => {
+    this.onSceneEvent("follow_character", (charId: string) => {
       const sprite = this.characterSprites.get(charId);
       if (sprite) this.cameraController.followCharacter(sprite);
     });
-    this.eventBus.on("unfollow_character", () => {
+    this.onSceneEvent("unfollow_character", () => {
       this.cameraController.stopFollowing();
     });
-    this.eventBus.on("dev_advance_tick", () => {
+    this.onSceneEvent("dev_advance_tick", () => {
       this.playbackController.devAdvanceTick();
     });
-    this.eventBus.on("set_auto_play", (enabled: boolean) => {
+    this.onSceneEvent("set_auto_play", (enabled: boolean) => {
       if (this.playbackController.getMode() === "replay") {
         this.playbackController.setReplayAutoPlay(enabled);
       } else {
         this.playbackController.setAutoPlay(enabled);
       }
     });
-    this.eventBus.on("set_tick_interval", (intervalMs: number) => {
+    this.onSceneEvent("set_tick_interval", (intervalMs: number) => {
       this.playbackController.setTickIntervalMs(intervalMs);
     });
-    this.eventBus.on("set_cycle_ticks", (cycleTicks: number) => {
+    this.onSceneEvent("set_cycle_ticks", (cycleTicks: number) => {
       this.playbackController.setCycleTicks(cycleTicks);
     });
-    this.eventBus.on("start_replay", (timelineId: string) => {
+    this.onSceneEvent("start_replay", (timelineId: string) => {
       void this.playbackController.startReplay(timelineId);
     });
-    this.eventBus.on("stop_replay", () => {
+    this.onSceneEvent("stop_replay", () => {
       this.playbackController.stopReplay();
     });
-    this.eventBus.on("replay_ended", () => {
+    this.onSceneEvent("replay_ended", () => {
       void this.syncCharactersFromServer();
     });
-    this.eventBus.on("set_replay_mode", (payload: { active: boolean }) => {
+    this.onSceneEvent("set_replay_mode", (payload: { active: boolean }) => {
       this.isReplaying = payload.active;
     });
-    this.eventBus.on("replay_init", (initFrame: any) => {
+    this.onSceneEvent("replay_init", (initFrame: any) => {
       this.handleReplayInit(initFrame);
     });
     const onTimeUpdate = (time: { day: number }) => {
@@ -318,6 +341,7 @@ export class WorldScene extends Phaser.Scene {
     this.eventBus.on("toggle_debug_interactive_objects_overlay", onToggleInteractiveObjectsOverlay);
     this.eventBus.on("time_update", onTimeUpdate);
     this.eventBus.on("scene_sync_characters", onSceneSyncCharacters);
+    this.eventBus.on("npc_roster_changed", onSceneSyncCharacters);
     this.eventBus.on("tick_playback_started", onTickPlaybackStarted);
     this.eventBus.on("tick_playback_events_flushed", onTickPlaybackEventsFlushed);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -327,10 +351,14 @@ export class WorldScene extends Phaser.Scene {
       this.eventBus.off("toggle_debug_interactive_objects_overlay", onToggleInteractiveObjectsOverlay);
       this.eventBus.off("time_update", onTimeUpdate);
       this.eventBus.off("scene_sync_characters", onSceneSyncCharacters);
+      this.eventBus.off("npc_roster_changed", onSceneSyncCharacters);
       this.eventBus.off("tick_playback_started", onTickPlaybackStarted);
       this.eventBus.off("tick_playback_events_flushed", onTickPlaybackEventsFlushed);
       this.cancelItemPlacementMode(false);
       this.hideItemActionMenu();
+      this.destroyTransferRequestModal();
+      this.clearSceneEvents();
+      this.clearMultiplayerEvents();
       this.playerController?.destroy();
       this.remotePlayerManager?.destroy();
       networkManager.disconnect();
@@ -392,7 +420,8 @@ export class WorldScene extends Phaser.Scene {
   ): Promise<void> {
     const backgroundUrl = String(this.registry.get("mapBackgroundUrl") || `${this.registry.get("mapAssetPrefix") || "/assets/maps/map_origin"}/06-background.png`);
     try {
-      const image = await this.loadHtmlImage(`${backgroundUrl}?runtimeDomTile=${Date.now()}`);
+      const separator = backgroundUrl.includes("?") ? "&" : "?";
+      const image = await this.loadHtmlImage(withAssetAuth(`${backgroundUrl}${separator}runtimeDomTile=${Date.now()}`));
       const rendered = this.renderImageAsCanvasTiles(backgroundLayer, image);
       if (rendered.tiles <= 0) {
         console.warn(`[WorldScene] DOM tiled background produced no tiles: ${backgroundUrl}`);
@@ -457,7 +486,7 @@ export class WorldScene extends Phaser.Scene {
 
   private async initAsync() {
     try {
-      const worldInfo = await apiClient.getWorldInfo();
+      const worldInfo = await apiClient.getWorldInfo(networkManager.getSelectedUserCharacterId() || undefined);
       this.mapManager.setMainAreaPoints(worldInfo.mainAreaPoints || []);
       const pointCenter = this.getMainAreaPointsCenter();
       if (pointCenter) {
@@ -535,12 +564,13 @@ export class WorldScene extends Phaser.Scene {
 
   /**
    * 初始化资源采集 / 建造系统。
-   * 玩家化身由联机 PlayerController 管理，这里只接入资源点、标记、采集按钮，
-   * 不创建任何玩家精灵、不接管点击移动（采集就近检测挂在联机化身上）。
+   * 本地用户角色由 UserCharacterController 管理，这里只接入资源点、标记、采集按钮，
+   * 不创建任何用户角色精灵、不接管点击移动（采集就近检测挂在本地用户角色上）。
    */
   private async initBuildSystem(): Promise<void> {
     try {
-      const state = await apiClient.getBuildState();
+      const userCharacterId = networkManager.getSelectedUserCharacterId() || networkManager.getPlayerId() || undefined;
+      const state = await apiClient.getBuildState(userCharacterId);
       this.buildState = state;
       this.resourceNodes.clear();
       for (const node of state.resourceNodes) {
@@ -569,7 +599,7 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
-  /** 当前本地玩家化身精灵（avatar 模式下存在，god 模式为 null）。 */
+  /** 当前本地用户角色精灵（avatar 模式下存在，god 模式为 null）。 */
   private getLocalAvatarSprite(): CharacterSprite | null {
     return this.playerController?.playerSprite ?? null;
   }
@@ -622,16 +652,25 @@ export class WorldScene extends Phaser.Scene {
           child.y === object.y,
       );
       for (const zone of zones) {
-        (zone as Phaser.GameObjects.Zone).on("pointerdown", () => {
+        (zone as Phaser.GameObjects.Zone).on(
+          "pointerdown",
+          (
+            _pointer: Phaser.Input.Pointer,
+            _localX: number,
+            _localY: number,
+            event: Phaser.Types.Input.EventData,
+          ) => {
+            event.stopPropagation();
           this.handleResourceClick(node.objectId);
-        });
+          },
+        );
       }
     }
   }
 
-  /**
+   /**
    * 点击资源点：若本地化身已在采集半径内则弹出采集按钮；
-   * 否则不接管移动（玩家用联机 PlayerController 的点击/键盘走过去）。
+   * 否则不接管移动（用户角色用 UserCharacterController 的点击/键盘走过去）。
    */
   private handleResourceClick(objectId: string): void {
     const avatar = this.getLocalAvatarSprite();
@@ -668,23 +707,28 @@ export class WorldScene extends Phaser.Scene {
     this.collectButtonContainer.add([this.collectButtonHitZone, this.collectButtonBg, this.collectButtonText]);
     this.collectButtonContainer.setSize(88, 40);
 
-    this.collectButtonHitZone.on("pointerdown", () => {
+    this.collectButtonHitZone.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
       this.setCollectButtonPressed(true);
       if (this.nearbyResourceObjectId) {
         this.collectResource(this.nearbyResourceObjectId);
       }
     });
-    this.collectButtonHitZone.on("pointerup", () => {
+    this.collectButtonHitZone.on("pointerup", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
       this.setCollectButtonPressed(false);
     });
-    this.collectButtonHitZone.on("pointerupoutside", () => {
+    this.collectButtonHitZone.on("pointerupoutside", (_pointer: Phaser.Input.Pointer, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
       this.setCollectButtonPressed(false);
     });
-    this.collectButtonHitZone.on("pointerover", () => {
+    this.collectButtonHitZone.on("pointerover", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
       this.setCanvasCursor("pointer");
       this.collectButtonText?.setStyle({ color: "#a3f7bf" });
     });
-    this.collectButtonHitZone.on("pointerout", () => {
+    this.collectButtonHitZone.on("pointerout", (_pointer: Phaser.Input.Pointer, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
       this.setCanvasCursor("default");
       this.setCollectButtonPressed(false);
       this.collectButtonText?.setStyle({ color: "#ffffff" });
@@ -716,12 +760,237 @@ export class WorldScene extends Phaser.Scene {
     this.input.keyboard?.on("keydown-ESC", () => {
       if (this.activeItemPlacement) this.cancelItemPlacementMode(true);
     });
-    this.eventBus.on("begin_item_placement", (payload: { item: InventoryItemInfo }) => {
+    this.input.keyboard?.on("keydown", (event: KeyboardEvent) => {
+      if (!this.activeItemPlacement || this.itemPlacementBusy) return;
+      if (event.key === "[" || event.key === "-" || event.key === "_") {
+        this.adjustActiveItemPlacementScale(-ITEM_PLACEMENT_VISUAL_SCALE_STEP);
+        event.preventDefault();
+      } else if (event.key === "]" || event.key === "=" || event.key === "+") {
+        this.adjustActiveItemPlacementScale(ITEM_PLACEMENT_VISUAL_SCALE_STEP);
+        event.preventDefault();
+      } else if (event.key.toLowerCase() === "q" || event.key === "," || event.key === "<") {
+        this.adjustActiveItemPlacementRotation(-ITEM_PLACEMENT_ROTATION_STEP_DEG);
+        event.preventDefault();
+      } else if (event.key.toLowerCase() === "e" || event.key === "." || event.key === ">") {
+        this.adjustActiveItemPlacementRotation(ITEM_PLACEMENT_ROTATION_STEP_DEG);
+        event.preventDefault();
+      }
+    });
+    this.onSceneEvent("begin_item_placement", (payload: { item: InventoryItemInfo }) => {
       this.beginItemPlacement(payload.item);
     });
-    this.eventBus.on("cancel_item_placement", () => {
+    this.onSceneEvent("cancel_item_placement", () => {
       this.cancelItemPlacementMode(true);
     });
+  }
+
+  private setupMapItemRealtimeEvents(): void {
+    const handleMapItemsChanged = () => {
+      void this.reloadMapItemPlacements();
+    };
+    this.eventBus.on("map_item_placed", handleMapItemsChanged);
+    this.eventBus.on("map_item_picked_up", handleMapItemsChanged);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.eventBus.off("map_item_placed", handleMapItemsChanged);
+      this.eventBus.off("map_item_picked_up", handleMapItemsChanged);
+    });
+  }
+
+  private setupTransferRequestOverlay(): void {
+    this.onSceneEvent("item_transfer_requested", (payload: ItemTransferEventPayload) => {
+      this.enqueueIncomingTransferRequest(payload);
+    });
+    this.onSceneEvent("item_transfer_completed", (payload: ItemTransferEventPayload) => {
+      this.removeTransferRequest(payload.transfer?.id);
+    });
+    this.onSceneEvent("item_transfer_cancelled", (payload: ItemTransferEventPayload) => {
+      this.removeTransferRequest(payload.transfer?.id);
+    });
+  }
+
+  private enqueueIncomingTransferRequest(payload: ItemTransferEventPayload): void {
+    const transfer = payload.transfer;
+    const currentUserId = networkManager.getUserId();
+    if (!transfer || transfer.status !== "requested") return;
+    if (transfer.toOwner?.ownerType !== "account" || transfer.toOwner.ownerId !== currentUserId) return;
+    if (this.activeTransferRequest?.id === transfer.id) return;
+    if (this.transferRequestQueue.some((item) => item.id === transfer.id)) return;
+    this.transferRequestQueue.push(transfer);
+    this.showNextTransferRequest();
+  }
+
+  private removeTransferRequest(transferId?: string): void {
+    if (!transferId) return;
+    this.transferRequestQueue = this.transferRequestQueue.filter((item) => item.id !== transferId);
+    if (this.activeTransferRequest?.id === transferId) {
+      this.destroyTransferRequestModal();
+      this.activeTransferRequest = null;
+      this.transferRequestBusy = false;
+      this.showNextTransferRequest();
+    }
+  }
+
+  private showNextTransferRequest(): void {
+    if (this.activeTransferRequest || this.transferRequestBusy) return;
+    const next = this.transferRequestQueue.shift();
+    if (!next) return;
+    this.activeTransferRequest = next;
+    this.renderTransferRequestModal(next);
+  }
+
+  private renderTransferRequestModal(transfer: ItemTransferInfo): void {
+    this.destroyTransferRequestModal();
+    const width = 430;
+    const height = transfer.kind === "trade" ? 224 : 196;
+    const x = Math.round(this.scale.width / 2 - width / 2);
+    const y = 108;
+    const container = this.add.container(x, y).setDepth(5000).setScrollFactor(0);
+    const shadow = this.add.graphics();
+    shadow.fillStyle(0x000000, 0.35);
+    shadow.fillRoundedRect(5, 7, width, height, 14);
+    const bg = this.add.graphics();
+    bg.fillStyle(0x111827, 0.97);
+    bg.fillRoundedRect(0, 0, width, height, 14);
+    bg.lineStyle(2, 0x60a5fa, 0.75);
+    bg.strokeRoundedRect(0, 0, width, height, 14);
+    const accent = this.add.graphics();
+    accent.fillStyle(transfer.kind === "trade" ? 0xf59e0b : 0x38bdf8, 1);
+    accent.fillRoundedRect(0, 0, 6, height, 3);
+
+    const title = this.add.text(24, 20, transfer.kind === "trade" ? "交换请求" : "赠送请求", {
+      fontSize: "20px",
+      fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
+      color: "#f8fafc",
+      fontStyle: "bold",
+    });
+    const fromName = stringMetadata(transfer.metadata, "fromCharacterName") || "其他玩家";
+    const itemName = transfer.item?.name || "未知物品";
+    const headline = transfer.kind === "trade"
+      ? `${fromName} 想用「${itemName}」交换你的物品`
+      : `${fromName} 想赠送你「${itemName}」`;
+    const body = this.add.text(24, 58, headline, {
+      fontSize: "15px",
+      fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
+      color: "#dbeafe",
+      wordWrap: { width: width - 48 },
+      lineSpacing: 5,
+    });
+    const detailText = transfer.kind === "trade"
+      ? `将换走你的物品：${stringMetadata(transfer.metadata, "requestedItemName") || "未指定"}`
+      : "接受后物品会进入你的账号背包。";
+    const detail = this.add.text(24, 111, detailText, {
+      fontSize: "13px",
+      fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
+      color: "#94a3b8",
+      wordWrap: { width: width - 48 },
+    });
+    const accept = this.createTransferModalButton(width - 208, height - 56, 88, 36, transfer.kind === "trade" ? "交换" : "接收", 0x2563eb, () => {
+      void this.respondToActiveTransferRequest(true);
+    });
+    const reject = this.createTransferModalButton(width - 108, height - 56, 84, 36, "拒绝", 0x374151, () => {
+      void this.respondToActiveTransferRequest(false);
+    });
+    const close = this.add
+      .text(width - 26, 24, "×", {
+        fontSize: "22px",
+        fontFamily: "Arial, sans-serif",
+        color: "#cbd5e1",
+      })
+      .setOrigin(0.5, 0.5)
+      .setInteractive({ useHandCursor: true });
+    close.on("pointerdown", (_pointer: Phaser.Input.Pointer, _x: number, _y: number, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
+      this.deferActiveTransferRequest();
+    });
+
+    container.add([shadow, bg, accent, title, body, detail, ...accept, ...reject, close]);
+    this.transferRequestModal = container;
+    this.tweens.add({
+      targets: container,
+      y: y + 8,
+      alpha: { from: 0, to: 1 },
+      duration: 160,
+      ease: "Sine.easeOut",
+    });
+  }
+
+  private createTransferModalButton(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    label: string,
+    color: number,
+    onClick: () => void,
+  ): Phaser.GameObjects.GameObject[] {
+    const bg = this.add.graphics();
+    bg.fillStyle(color, 0.96);
+    bg.fillRoundedRect(x, y, width, height, 9);
+    bg.lineStyle(1, 0xffffff, 0.18);
+    bg.strokeRoundedRect(x, y, width, height, 9);
+    const text = this.add.text(x + width / 2, y + height / 2, label, {
+      fontSize: "15px",
+      fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
+      color: "#ffffff",
+      fontStyle: "bold",
+    }).setOrigin(0.5, 0.5);
+    const zone = this.add.zone(x + width / 2, y + height / 2, width, height)
+      .setInteractive({ useHandCursor: true });
+    zone.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
+      if (!this.transferRequestBusy) onClick();
+    });
+    zone.on("pointerover", () => {
+      bg.clear();
+      bg.fillStyle(lightenColor(color), 1);
+      bg.fillRoundedRect(x, y, width, height, 9);
+      bg.lineStyle(1, 0xffffff, 0.26);
+      bg.strokeRoundedRect(x, y, width, height, 9);
+    });
+    zone.on("pointerout", () => {
+      bg.clear();
+      bg.fillStyle(color, 0.96);
+      bg.fillRoundedRect(x, y, width, height, 9);
+      bg.lineStyle(1, 0xffffff, 0.18);
+      bg.strokeRoundedRect(x, y, width, height, 9);
+    });
+    return [bg, text, zone];
+  }
+
+  private async respondToActiveTransferRequest(accept: boolean): Promise<void> {
+    const transfer = this.activeTransferRequest;
+    if (!transfer || this.transferRequestBusy) return;
+    this.transferRequestBusy = true;
+    try {
+      await apiClient.respondItemTransfer(transfer.id, accept);
+      this.flashPlacementMessage(
+        accept
+          ? transfer.kind === "trade" ? "交换已完成" : "已接收物品"
+          : transfer.kind === "trade" ? "已拒绝交换" : "已拒绝赠送",
+        accept,
+      );
+      this.eventBus.emit("inventory_changed");
+      this.destroyTransferRequestModal();
+      this.activeTransferRequest = null;
+      this.transferRequestBusy = false;
+      this.showNextTransferRequest();
+    } catch (error) {
+      this.transferRequestBusy = false;
+      this.flashPlacementMessage(error instanceof Error ? error.message : "交易处理失败", false);
+    }
+  }
+
+  private deferActiveTransferRequest(): void {
+    if (!this.activeTransferRequest || this.transferRequestBusy) return;
+    this.transferRequestQueue.push(this.activeTransferRequest);
+    this.activeTransferRequest = null;
+    this.destroyTransferRequestModal();
+    this.time.delayedCall(250, () => this.showNextTransferRequest());
+  }
+
+  private destroyTransferRequestModal(): void {
+    this.transferRequestModal?.destroy(true);
+    this.transferRequestModal = null;
   }
 
   private beginItemPlacement(item: InventoryItemInfo): void {
@@ -729,6 +998,8 @@ export class WorldScene extends Phaser.Scene {
     this.activeItemPlacement = {
       item,
       footprintTiles: this.normalizeFootprintFromItem(item),
+      visualScale: 1,
+      rotation: 0,
     };
     this.itemPlacementBusy = false;
     this.eventBus.emit("set_click_move_enabled", false);
@@ -750,6 +1021,23 @@ export class WorldScene extends Phaser.Scene {
     if (emit) {
       this.eventBus.emit("item_placement_mode_changed", { active: false });
     }
+  }
+
+  private adjustActiveItemPlacementScale(delta: number): void {
+    if (!this.activeItemPlacement) return;
+    const current = this.activeItemPlacement.visualScale;
+    this.activeItemPlacement.visualScale = normalizeItemVisualScale(current + delta);
+    const pointer = this.input.activePointer;
+    const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    this.updateItemPlacementPreview(worldPoint.x, worldPoint.y);
+  }
+
+  private adjustActiveItemPlacementRotation(deltaDegrees: number): void {
+    if (!this.activeItemPlacement) return;
+    this.activeItemPlacement.rotation = normalizeItemRotationDegrees(this.activeItemPlacement.rotation + deltaDegrees);
+    const pointer = this.input.activePointer;
+    const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    this.updateItemPlacementPreview(worldPoint.x, worldPoint.y);
   }
 
   private ensureItemPlacementPreview(): void {
@@ -793,7 +1081,11 @@ export class WorldScene extends Phaser.Scene {
     graphics.lineStyle(2, ok ? 0xa6f0c6 : 0xffb3b3, 0.95);
     graphics.strokeRect(0, 0, rectW, rectH);
     this.updateItemPlacementPreviewImage(rectW, rectH, ok);
-    label.setText(ok ? "点击摆放" : "不可摆放");
+    const scaleLabel = `${Math.round(this.activeItemPlacement.visualScale * 100)}%`;
+    const rotationLabel = `${Math.round(this.activeItemPlacement.rotation)}°`;
+    label.setText(ok
+      ? `点击摆放 · ${scaleLabel} · ${rotationLabel} · [ ]缩放 Q/E旋转`
+      : `不可摆放 · ${scaleLabel} · ${rotationLabel}`);
     label.setPosition(rectW / 2, -5);
   }
 
@@ -821,10 +1113,13 @@ export class WorldScene extends Phaser.Scene {
     if (this.itemPlacementPreviewImage.texture.key !== asset.key) {
       this.itemPlacementPreviewImage.setTexture(asset.key);
     }
-    const scale = Math.min(width / Math.max(1, this.itemPlacementPreviewImage.width), height / Math.max(1, this.itemPlacementPreviewImage.height)) * 0.92;
+    const scale = Math.min(width / Math.max(1, this.itemPlacementPreviewImage.width), height / Math.max(1, this.itemPlacementPreviewImage.height))
+      * 0.92
+      * this.activeItemPlacement.visualScale;
     this.itemPlacementPreviewImage
       .setPosition(width / 2, height / 2)
       .setScale(scale)
+      .setRotation(Phaser.Math.DegToRad(this.activeItemPlacement.rotation))
       .setAlpha(ok ? 0.9 : 0.42)
       .setTint(ok ? 0xffffff : 0xffb3b3)
       .setVisible(true);
@@ -855,7 +1150,9 @@ export class WorldScene extends Phaser.Scene {
         entryId: placement.item.entryId,
         x: tileX * tileSize + tileSize / 2,
         y: tileY * tileSize + tileSize / 2,
+        rotation: placement.rotation,
         footprintTiles: placement.footprintTiles,
+        visualScale: placement.visualScale,
       });
       this.renderMapItemPlacement(result.placement);
       this.applyPlacementCollision([result.placement], "append");
@@ -871,7 +1168,8 @@ export class WorldScene extends Phaser.Scene {
 
   private async reloadMapItemPlacements(): Promise<void> {
     try {
-      const response = await apiClient.getMapItemPlacements();
+      const userCharacterId = networkManager.getSelectedUserCharacterId() || networkManager.getPlayerId() || undefined;
+      const response = await apiClient.getMapItemPlacements({ userCharacterId });
       this.itemPlacementLayer?.removeAll(true);
       this.applyPlacementCollision(response.placements, "replace");
       for (const placement of response.placements) {
@@ -893,34 +1191,18 @@ export class WorldScene extends Phaser.Scene {
     const y = start.gy * tileSize;
     const collisionWidth = footprint.width * tileSize;
     const collisionHeight = footprint.height * tileSize;
-    const visualSize = getItemVisualSize(footprint);
+    const visualScale = normalizeItemVisualScale(placement.metadata?.visualScale);
+    const visualSize = getItemVisualSize(footprint, visualScale);
+    const rotationRadians = normalizeItemRotationRadians(placement.rotation);
     const visualX = x + collisionWidth / 2 - visualSize.width / 2;
     const visualY = y + collisionHeight / 2 - visualSize.height / 2;
-    const hasAsset = typeof placement.metadata?.assetUrl === "string" && placement.metadata.assetUrl.length > 0;
 
     const container = this.add.container(visualX, visualY).setDepth(8);
     container.setData("placementId", placement.id);
     container.setSize(visualSize.width, visualSize.height);
     const children: Phaser.GameObjects.GameObject[] = [];
-    if (!hasAsset) {
-      const shape = this.add.graphics();
-      shape.fillStyle(colorForItemName(placement.name), 0.84);
-      shape.fillRoundedRect(0, 0, visualSize.width, visualSize.height, 8);
-      shape.lineStyle(2, 0xffffff, 0.42);
-      shape.strokeRoundedRect(0, 0, visualSize.width, visualSize.height, 8);
-      children.push(shape);
-      children.push(
-        this.add
-          .text(visualSize.width / 2, visualSize.height / 2, placement.name.slice(0, 6), {
-            fontSize: "13px",
-            fontFamily: "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
-            color: "#ffffff",
-            stroke: "#000000",
-            strokeThickness: 2,
-          })
-          .setOrigin(0.5, 0.5),
-      );
-    }
+    const fallbackChildren = this.createItemPlacementFallback(placement, visualSize.width, visualSize.height, rotationRadians);
+    children.push(...fallbackChildren);
     const hitZone = this.add
       .zone(visualSize.width / 2, visualSize.height / 2, Math.max(visualSize.width, 32), Math.max(visualSize.height, 32))
       .setOrigin(0.5, 0.5)
@@ -931,7 +1213,32 @@ export class WorldScene extends Phaser.Scene {
       });
     container.add([...children, hitZone]);
     this.itemPlacementLayer.add(container);
-    this.attachItemAssetSprite(container, placement, visualSize.width, visualSize.height);
+    this.attachItemAssetSprite(container, placement, visualSize.width, visualSize.height, fallbackChildren, rotationRadians);
+  }
+
+  private createItemPlacementFallback(
+    placement: MapItemPlacementInfo,
+    width: number,
+    height: number,
+    rotationRadians: number,
+  ): Phaser.GameObjects.GameObject[] {
+    const group = this.add.container(width / 2, height / 2).setRotation(rotationRadians);
+    const shape = this.add.graphics();
+    shape.fillStyle(colorForItemName(placement.name), 0.84);
+    shape.fillRoundedRect(-width / 2, -height / 2, width, height, 8);
+    shape.lineStyle(2, 0xffffff, 0.42);
+    shape.strokeRoundedRect(-width / 2, -height / 2, width, height, 8);
+    const label = this.add
+      .text(0, 0, placement.name.slice(0, 6), {
+        fontSize: "13px",
+        fontFamily: "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 2,
+      })
+      .setOrigin(0.5, 0.5);
+    group.add([shape, label]);
+    return [group];
   }
 
   private showItemActionMenu(placement: MapItemPlacementInfo, x: number, y: number): void {
@@ -966,11 +1273,15 @@ export class WorldScene extends Phaser.Scene {
       .setOrigin(0.5, 0.5)
       .setInteractive({ useHandCursor: true });
     if (canPickup) {
-      ownershipLabel.on("pointerdown", () => {
+      ownershipLabel.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+        event.stopPropagation();
         void this.pickupMapItem(placement.id);
       });
     }
-    close.on("pointerdown", () => this.hideItemActionMenu());
+    close.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
+      this.hideItemActionMenu();
+    });
     menu.add([bg, ownershipLabel, close]);
     this.itemActionMenu = menu;
   }
@@ -1004,6 +1315,8 @@ export class WorldScene extends Phaser.Scene {
     placement: MapItemPlacementInfo,
     width: number,
     height: number,
+    fallbackChildren: Phaser.GameObjects.GameObject[],
+    rotationRadians: number,
   ): void {
     const assetUrl = typeof placement.metadata?.assetUrl === "string" ? placement.metadata.assetUrl : "";
     if (!assetUrl) return;
@@ -1015,9 +1328,13 @@ export class WorldScene extends Phaser.Scene {
       const image = this.add.image(width / 2, height / 2, asset.key).setOrigin(0.5, 0.5);
       const scale = Math.min(width / Math.max(1, image.width), height / Math.max(1, image.height)) * 1.05;
       image.setScale(scale);
+      image.setRotation(rotationRadians);
       image.setDepth(1);
       container.add(image);
       container.bringToTop(image);
+      for (const child of fallbackChildren) {
+        child.destroy();
+      }
     };
 
     this.loadItemAssetTexture(asset, addSprite);
@@ -1034,13 +1351,17 @@ export class WorldScene extends Phaser.Scene {
     }
     this.loadingItemAssetKeys.add(asset.key);
     if (asset.kind === "svg" || asset.url.toLowerCase().endsWith(".svg")) {
-      this.load.svg(asset.key, asset.url, { width: 96, height: 96 });
+      this.load.svg(asset.key, withAssetAuth(asset.url), { width: 96, height: 96 });
     } else {
-      this.load.image(asset.key, asset.url);
+      this.load.image(asset.key, withAssetAuth(asset.url));
     }
     this.load.once(Phaser.Loader.Events.COMPLETE, () => {
       this.loadingItemAssetKeys.delete(asset.key);
       onReady();
+    });
+    this.load.once("loaderror", () => {
+      this.loadingItemAssetKeys.delete(asset.key);
+      console.warn("[WorldScene] Failed to load placed item asset:", asset.url);
     });
     this.load.start();
   }
@@ -1170,9 +1491,9 @@ export class WorldScene extends Phaser.Scene {
     this.nearbyResourceObjectId = null;
   }
 
-  /**
+   /**
    * 每帧检查本地化身是否靠近资源点，靠近则显示采集按钮。
-   * 位置来自联机 PlayerController，god 模式（无化身）下不显示。
+   * 位置来自 UserCharacterController，god 模式（无化身）下不显示。
    */
   private updateNearbyResource(): void {
     const avatar = this.getLocalAvatarSprite();
@@ -1225,9 +1546,12 @@ export class WorldScene extends Phaser.Scene {
         if (node && node.remaining <= 0) {
           this.hideCollectButton();
         }
+      } else {
+        this.spawnCollectStatus(result.reason || "采集失败", 0xff7675);
       }
     } catch (e) {
       console.warn("[WorldScene] Failed to collect resource:", e);
+      this.spawnCollectStatus(e instanceof Error ? e.message : "采集失败", 0xff7675);
     }
   }
 
@@ -1288,8 +1612,41 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
+  private spawnCollectStatus(message: string, color: number): void {
+    const avatar = this.getLocalAvatarSprite();
+    const x = avatar?.x ?? this.cameras.main.midPoint.x;
+    const y = (avatar?.y ?? this.cameras.main.midPoint.y) - 42;
+    const text = this.add
+      .text(x, y, message.replace(/^API \d+[:：]?\s*/, ""), {
+        fontSize: "15px",
+        fontFamily: "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif",
+        color: `#${color.toString(16).padStart(6, "0")}`,
+        fontStyle: "bold",
+        stroke: "#000000",
+        strokeThickness: 4,
+        align: "center",
+        wordWrap: { width: 260 },
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(62);
+    this.tweens.add({
+      targets: text,
+      y: y - 48,
+      alpha: 0,
+      duration: 1200,
+      ease: "Cubic.easeOut",
+      onComplete: () => text.destroy(),
+    });
+  }
+
   private setupMultiplayerEvents(): void {
-    this.eventBus.on("player_joined", (data: any) => {
+    this.clearMultiplayerEvents();
+    const on = (eventName: string, handler: (...args: any[]) => void) => {
+      this.eventBus.on(eventName, handler);
+      this.multiplayerEventCleanups.push(() => this.eventBus.off(eventName, handler));
+    };
+
+    on("user_character_joined", (data: any) => {
       if (data.mode && data.mode !== "avatar") return;
       const localPlayerId = networkManager.getPlayerId() || networkManager.getSelectedUserCharacterId();
       if (data.id === localPlayerId) return;
@@ -1303,15 +1660,15 @@ export class WorldScene extends Phaser.Scene {
       });
     });
 
-    this.eventBus.on("player_left", (data: any) => {
+    on("user_character_left", (data: any) => {
       this.remotePlayerManager.removePlayer(data.playerId);
     });
 
-    this.eventBus.on("player_moved", (data: any) => {
+    on("user_character_moved", (data: any) => {
       this.remotePlayerManager.updatePosition(data.playerId, data.x, data.y);
     });
 
-    this.eventBus.on("players_online", (data: any[]) => {
+    on("user_characters_online", (data: any[]) => {
       const spriteId = this.getFirstNpcSpriteId();
       const localPlayerId = networkManager.getPlayerId() || networkManager.getSelectedUserCharacterId();
       const remoteIds = new Set<string>();
@@ -1331,7 +1688,8 @@ export class WorldScene extends Phaser.Scene {
       this.remotePlayerManager.retainOnly(remoteIds);
     });
 
-    this.eventBus.on("local_player_id_changed", (data: { previousPlayerId?: string | null; playerId?: string | null }) => {
+    on("local_user_character_id_changed", (data: { previousPlayerId?: string | null; playerId?: string | null }) => {
+      this.remotePlayerManager.clear();
       if (data.previousPlayerId) {
         this.remotePlayerManager.removePlayer(data.previousPlayerId);
       }
@@ -1340,18 +1698,35 @@ export class WorldScene extends Phaser.Scene {
       }
     });
 
-    this.eventBus.on("remote_player_mode_changed", (data: any) => {
+    on("remote_user_character_mode_changed", (data: any) => {
       if (data.mode === "god") {
         this.remotePlayerManager.removePlayer(data.playerId);
       }
     });
 
-    this.eventBus.on("player_chat", (data: any) => {
+    on("user_character_chat", (data: any) => {
       const entry = this.remotePlayerManager.sprites.get(data.playerId);
       if (entry?.sprite) {
         entry.sprite.showBubble(data.message, 5000);
       }
     });
+  }
+
+  private onSceneEvent(eventName: string, handler: (...args: any[]) => void): void {
+    this.eventBus.on(eventName, handler);
+    this.sceneEventCleanups.push(() => this.eventBus.off(eventName, handler));
+  }
+
+  private clearSceneEvents(): void {
+    for (const cleanup of this.sceneEventCleanups.splice(0)) {
+      cleanup();
+    }
+  }
+
+  private clearMultiplayerEvents(): void {
+    for (const cleanup of this.multiplayerEventCleanups.splice(0)) {
+      cleanup();
+    }
   }
 
   private getFirstNpcSpriteId(): string | null {
@@ -1403,7 +1778,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private async syncCharactersFromServer(): Promise<void> {
-    const characters = await apiClient.getCharacters();
+    const characters = await apiClient.getCharacters(networkManager.getSelectedUserCharacterId() || undefined);
     console.log("[WorldScene] Got characters:", characters.length);
     const zoom = this.cameras.main.zoom;
     const displayMetrics = createCharacterDisplayMetrics(this.mapPixelWidth, this.mapPixelHeight);
@@ -1467,7 +1842,7 @@ export class WorldScene extends Phaser.Scene {
       }
       for (const charId of charIds) {
         const characterAssetPrefix = String(this.registry.get("characterAssetPrefix") || "/assets/characters");
-        this.load.spritesheet(charId, `${characterAssetPrefix}/${encodeURIComponent(charId)}/spritesheet.png`, {
+        this.load.spritesheet(charId, withAssetAuth(`${characterAssetPrefix}/${encodeURIComponent(charId)}/spritesheet.png`), {
           frameWidth: SPRITE_FRAME_WIDTH,
           frameHeight: SPRITE_FRAME_HEIGHT,
         });
@@ -2100,7 +2475,7 @@ export class WorldScene extends Phaser.Scene {
     for (const sprite of this.characterSprites.values()) {
       sprite.syncOverlayZoom(zoom);
     }
-    // 玩家化身也需要同步 DOM 标签位置
+    // 本地用户角色也需要同步 DOM 标签位置
     if (this.playerController?.playerSprite) {
       this.playerController.playerSprite.syncOverlayZoom(zoom);
     }
@@ -2125,12 +2500,30 @@ function normalizeFootprintObject(raw: unknown): { width: number; height: number
   };
 }
 
-function getItemVisualSize(footprint: { width: number; height: number }): { width: number; height: number } {
+function getItemVisualSize(footprint: { width: number; height: number }, visualScale = 1): { width: number; height: number } {
   const visualTilePx = 32;
+  const scale = normalizeItemVisualScale(visualScale);
   return {
-    width: Math.max(48, footprint.width * visualTilePx),
-    height: Math.max(48, footprint.height * visualTilePx),
+    width: Math.max(24, Math.max(48, footprint.width * visualTilePx) * scale),
+    height: Math.max(24, Math.max(48, footprint.height * visualTilePx) * scale),
   };
+}
+
+function normalizeItemVisualScale(raw: unknown): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(ITEM_PLACEMENT_MIN_VISUAL_SCALE, Math.min(ITEM_PLACEMENT_MAX_VISUAL_SCALE, Math.round(value * 10) / 10));
+}
+
+function normalizeItemRotationDegrees(raw: unknown): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return 0;
+  const normalized = value % 360;
+  return normalized < 0 ? normalized + 360 : normalized;
+}
+
+function normalizeItemRotationRadians(raw: unknown): number {
+  return Phaser.Math.DegToRad(normalizeItemRotationDegrees(raw));
 }
 
 type ItemAssetDescriptor = {
@@ -2146,7 +2539,7 @@ function getItemAssetDescriptor(metadata: Record<string, unknown> | undefined, f
     ? metadata.assetKey
     : `item_asset_${fallbackId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
   const kind = typeof metadata?.assetKind === "string" ? metadata.assetKind : "";
-  return { key: rawKey, url, kind };
+  return { key: rawKey, url: withAssetAuth(url), kind };
 }
 
 function colorForItemName(name: string): number {
@@ -2156,4 +2549,16 @@ function colorForItemName(name: string): number {
   }
   const palette = [0x9b6b43, 0x6b8f71, 0x8a7bb8, 0xb88752, 0x5b8aa8, 0x9d6f7f];
   return palette[hash % palette.length];
+}
+
+function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function lightenColor(color: number): number {
+  const r = Math.min(255, ((color >> 16) & 0xff) + 24);
+  const g = Math.min(255, ((color >> 8) & 0xff) + 24);
+  const b = Math.min(255, (color & 0xff) + 24);
+  return (r << 16) | (g << 8) | b;
 }

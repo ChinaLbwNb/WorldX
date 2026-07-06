@@ -2,17 +2,42 @@
 
 node_modules/
 dist/
+
+# Local secrets
+.env*
+!.env.example
+
+# Runtime data. Keep source and migratable user data separate.
+output/**
+tmp/**
+logs/**
+.tmp-codex-tests/**
+_expand_jobid.txt
+
+# SQLite runtime sidecars and local databases
 *.db
 *.sqlite
 *.sqlite-*
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+
+# Generated backups and local build snapshots
 *.bak
 *.bak*
+*.bld
 *.bld*
-.env*
-!.env.example
-output/
-tmp/
-_expand_jobid.txt
+*.bld-*
+
+# Generator scratch output
+generators/**/output/**
+orchestrator/**/output/**
+server/**/output/**
+client/**/dist/**
+
+# Built-in library worlds are source assets; ignore only runtime timelines.
+library/worlds/*/timelines/
+
 .DS_Store
 *.log
-library/worlds/*/timelines/

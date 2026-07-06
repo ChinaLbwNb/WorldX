@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { apiClient } from "../services/api-client";
+import { networkManager } from "../../systems/NetworkManager";
 import type { CharacterInfo } from "../../types/api";
+import { darkGlassPanelStyle, useFloatingWindowZIndex } from "../components/panel-styles";
 
 type TabKey = "broadcast" | "whisper";
 
@@ -17,6 +19,7 @@ const PRESET_CARD_KEYS = [
 
 export function GodPanel({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
+  const { zIndex, bringToFront } = useFloatingWindowZIndex(true, 840);
   const [tab, setTab] = useState<TabKey>("broadcast");
   const [characters, setCharacters] = useState<CharacterInfo[]>([]);
   const [flash, setFlash] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -34,7 +37,7 @@ export function GodPanel({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     apiClient
-      .getCharacters()
+      .getCharacters(networkManager.getSelectedUserCharacterId() || undefined)
       .then((list) => {
         setCharacters(list);
         if (list.length > 0) setWhisperCharId(list[0].id);
@@ -108,7 +111,7 @@ export function GodPanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div style={backdropStyle} onClick={onClose}>
+    <div style={{ ...backdropStyle, zIndex }} onClick={onClose} onPointerDown={bringToFront}>
       <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
         <div style={headerStyle}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -272,26 +275,21 @@ export function GodPanel({ onClose }: { onClose: () => void }) {
 
 const backdropStyle: CSSProperties = {
   position: "fixed",
-  top: "var(--top-ui-offset, 0px)",
-  left: 0,
-  right: 0,
-  bottom: 0,
+  inset: 0,
   background: "rgba(4,6,12,0.55)",
-  zIndex: 500,
+  zIndex: 840,
   display: "flex",
-  alignItems: "flex-start",
+  alignItems: "center",
   justifyContent: "center",
-  padding: "0 16px 16px",
+  padding: 16,
   overflowY: "auto",
 };
 
 const panelStyle: CSSProperties = {
   width: "min(560px, calc(100% - 32px))",
-  maxHeight: "calc(100vh - var(--top-ui-offset, 0px) - 16px)",
-  background: "linear-gradient(180deg, rgba(16,20,36,0.98), rgba(12,14,26,0.98))",
-  border: "1px solid rgba(255,255,255,0.12)",
+  maxHeight: "calc(100vh - 32px)",
+  ...darkGlassPanelStyle,
   borderRadius: 14,
-  boxShadow: "0 28px 70px rgba(0,0,0,0.55)",
   color: "#e0e0e0",
   overflow: "hidden",
   display: "flex",

@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from "react";
 import type { CSSProperties } from "react";
 import { apiClient } from "../services/api-client";
 import { networkManager } from "../../systems/NetworkManager";
+import { EventBus } from "../../EventBus";
+import { centeredWindowStyle, useFloatingWindowZIndex } from "../components/panel-styles";
 import type {
   BuildState,
   BuildCosts,
@@ -9,7 +11,7 @@ import type {
   WorldMapNodeInfo,
 } from "../../types/api";
 
-type TabKey = "character" | "map";
+export type BuildPanelMode = "character" | "map";
 
 const RESOURCE_ICONS: Record<string, string> = {
   wood: "🪵",
@@ -27,13 +29,14 @@ export function BuildPanel({
   onClose,
   buildState,
   onBuildStateChange,
+  mode = "character",
 }: {
   open: boolean;
   onClose: () => void;
   buildState: BuildState | null;
   onBuildStateChange?: (state: BuildState) => void;
+  mode?: BuildPanelMode;
 }) {
-  const [tab, setTab] = useState<TabKey>("character");
   const [characterPrompt, setCharacterPrompt] = useState("");
   const [mapPrompt, setMapPrompt] = useState("");
   const [characterJob, setCharacterJob] = useState<BuildJobStatus | null>(null);
@@ -73,9 +76,11 @@ export function BuildPanel({
         const status = await apiClient.getCharacterBuildJob(characterJob.jobId);
         setCharacterJob(status);
         if (status.status === "done") {
-          showFlash("ok", "角色生成完成！");
+          showFlash("ok", "NPC 生成完成！");
+          EventBus.instance.emit("npc_roster_changed");
+          EventBus.instance.emit("scene_sync_characters");
           try {
-            const fresh = await apiClient.getBuildState();
+            const fresh = await apiClient.getBuildState(networkManager.getSelectedUserCharacterId() || undefined);
             onBuildStateChange?.(fresh);
           } catch { /* ignore */ }
         } else if (status.status === "error") {
@@ -106,8 +111,9 @@ export function BuildPanel({
         setMapJob(status);
         if (status.status === "done") {
           showFlash("ok", "地图节点生成完成！");
+          EventBus.instance.emit("map_nodes_changed");
           try {
-            const fresh = await apiClient.getBuildState();
+            const fresh = await apiClient.getBuildState(networkManager.getSelectedUserCharacterId() || undefined);
             onBuildStateChange?.(fresh);
           } catch { /* ignore */ }
         } else if (status.status === "error") {
@@ -126,16 +132,21 @@ export function BuildPanel({
     if (busy) return;
     const trimmed = characterPrompt.trim();
     if (!trimmed) {
-      showFlash("err", "请输入角色描述");
+      showFlash("err", "请输入 NPC 描述");
       return;
     }
     if (!canAffordCharacter) {
-      showFlash("err", "资源不足");
+      showFlash("err", `资源不足：生成 NPC 需要 ${formatCost(costs.character)}，当前只有 ${formatCost(resources)}`);
+      return;
+    }
+    const selectedCharacterId = networkManager.getSelectedUserCharacterId();
+    if (!selectedCharacterId) {
+      showFlash("err", "请先选择一个账号角色进入世界");
       return;
     }
     setBusy(true);
     try {
-      const result = await apiClient.buildCharacter(trimmed);
+      const result = await apiClient.buildCharacter(trimmed, selectedCharacterId);
       if (result.ok) {
         setCharacterJob({
           jobId: result.jobId,
@@ -143,8 +154,12 @@ export function BuildPanel({
           progress: 0,
           total: 100,
         });
-        showFlash("ok", "开始生成角色...");
+        showFlash("ok", "开始生成 NPC...");
         setCharacterPrompt("");
+        try {
+          const fresh = await apiClient.getBuildState(networkManager.getSelectedUserCharacterId() || undefined);
+          onBuildStateChange?.(fresh);
+        } catch { /* ignore */ }
       }
     } catch (err) {
       showFlash("err", err instanceof Error ? err.message : String(err));
@@ -161,12 +176,17 @@ export function BuildPanel({
       return;
     }
     if (!canAffordMapExpand) {
-      showFlash("err", "资源不足");
+      showFlash("err", `资源不足：生成地图需要 ${formatCost(costs.mapExpand)}，当前只有 ${formatCost(resources)}`);
+      return;
+    }
+    const selectedCharacterId = networkManager.getSelectedUserCharacterId();
+    if (!selectedCharacterId) {
+      showFlash("err", "请先选择一个账号角色进入世界");
       return;
     }
     setBusy(true);
     try {
-      const result = await apiClient.generateMapNode({ prompt: trimmed });
+      const result = await apiClient.generateMapNode({ prompt: trimmed, userCharacterId: selectedCharacterId });
       if (result.ok) {
         setMapJob({
           jobId: result.jobId,
@@ -176,6 +196,10 @@ export function BuildPanel({
         });
         showFlash("ok", "开始生成新地图...");
         setMapPrompt("");
+        try {
+          const fresh = await apiClient.getBuildState(networkManager.getSelectedUserCharacterId() || undefined);
+          onBuildStateChange?.(fresh);
+        } catch { /* ignore */ }
       }
     } catch (err) {
       showFlash("err", err instanceof Error ? err.message : String(err));
@@ -186,16 +210,19 @@ export function BuildPanel({
 
   const handleTravel = async (map: WorldMapNodeInfo) => {
     if (busy || map.status !== "available") return;
-    if (buildState?.worldMaps?.activeMapId === map.id) return;
-    setBusy(true);
-    try {
-      const selectedCharacterId = networkManager.getSelectedUserCharacterId();
-      const result = selectedCharacterId
-        ? await apiClient.enterMapWithUserCharacter(selectedCharacterId, map.id)
-        : await apiClient.travelToMap(map.id);
+    const mapState = buildState?.mapNodes;
+    if (mapState?.activeMapId === map.id) return;
+      setBusy(true);
+      try {
+        const selectedCharacterId = networkManager.getSelectedUserCharacterId();
+      if (!selectedCharacterId) {
+        showFlash("err", "请先选择一个账号角色");
+        return;
+      }
+      const result = await apiClient.enterMapWithUserCharacter(selectedCharacterId, map.id);
       if ("character" in result) {
         networkManager.setSelectedUserCharacter(result.character.id, result.character.name);
-        networkManager.setIdentity(result.character.name, networkManager.getStoredCode());
+        networkManager.setIdentity(result.character.name);
       }
       showFlash("ok", `正在前往：${map.name}`);
       if (result.requiresReload) {
@@ -219,6 +246,11 @@ export function BuildPanel({
       ? (mapJob.progress / mapJob.total) * 100
       : 0
     : 0;
+  const { zIndex, bringToFront } = useFloatingWindowZIndex(open, 840);
+
+  useEffect(() => {
+    if (open) bringToFront();
+  }, [bringToFront, mode, open]);
 
   if (!open) return null;
 
@@ -229,48 +261,37 @@ export function BuildPanel({
     ? "生成中..."
     : busy
     ? "提交中..."
-    : "生成角色";
-  const worldMaps = buildState?.worldMaps;
-  const activeMapId = worldMaps?.activeMapId;
+    : canAffordCharacter
+    ? "生成 NPC"
+    : "资源不足";
+  const mapNodesState = buildState?.mapNodes;
+  const activeMapId = mapNodesState?.activeMapId;
+  const mapNodes = mapNodesState?.mapNodes ?? [];
+  const isCharacterMode = mode === "character";
+  const panelTitle = isCharacterMode ? "生成 NPC" : "地图";
+  const panelIcon = isCharacterMode ? "👤" : "🗺️";
 
   return (
-    <div style={panelStyle}>
-      <button onClick={onClose} style={toggleBtnStyle} title="收起建造面板">
-        ▸
-      </button>
-
+    <div style={{ ...panelStyle, zIndex }} onPointerDown={bringToFront}>
       <div style={panelBodyStyle(open)}>
         {/* Header */}
         <div style={headerStyle}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 16 }}>🏗️</span>
-            <span style={{ fontWeight: 700, fontSize: 14 }}>建造面板</span>
+            <span style={{ fontSize: 16 }}>{panelIcon}</span>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>{panelTitle}</span>
           </div>
           <button onClick={onClose} style={closeBtnStyle}>×</button>
         </div>
 
-        {/* Tabs */}
-        <div style={tabsStyle}>
-          {(["character", "map"] as TabKey[]).map((key) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              style={tabBtnStyle(tab === key)}
-            >
-              {key === "character" ? "生成角色" : "生成地图"}
-            </button>
-          ))}
-        </div>
-
         {/* Body */}
         <div style={bodyStyle}>
-          {tab === "character" && (
+          {isCharacterMode && (
             <div style={sectionStyle}>
-              <label style={labelStyle}>角色描述</label>
+              <label style={labelStyle}>地图 NPC 描述</label>
               <textarea
                 value={characterPrompt}
                 onChange={(e) => setCharacterPrompt(e.target.value)}
-                placeholder="描述你想要生成的角色，例如：一个年轻的铁匠，性格开朗，擅长制作武器"
+                placeholder="描述想加入当前世界的 NPC，例如：一个年轻的铁匠，性格开朗，擅长制作武器"
                 rows={3}
                 style={textareaStyle}
                 disabled={busy || isCharacterJobRunning}
@@ -301,17 +322,23 @@ export function BuildPanel({
                   <div style={progressBarBgStyle}>
                     <div style={{ ...progressBarFillStyle, width: characterProgress + "%" }} />
                   </div>
+                  {characterJob.message && (
+                    <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>{characterJob.message}</div>
+                  )}
+                  {characterJob.logs && characterJob.logs.length > 0 && (
+                    <LogBox logs={characterJob.logs} />
+                  )}
                 </div>
               )}
             </div>
           )}
 
-          {tab === "map" && (
+          {!isCharacterMode && (
             <div style={sectionStyle}>
               <label style={labelStyle}>世界地图</label>
-              {worldMaps ? (
+              {mapNodesState ? (
                 <div style={worldMapListStyle}>
-                  {[...worldMaps.maps]
+                  {[...mapNodes]
                     .sort((a, b) => a.gridY - b.gridY || a.gridX - b.gridX)
                     .map((map) => (
                       <button
@@ -335,7 +362,7 @@ export function BuildPanel({
                 </div>
               ) : null}
 
-              {worldMaps ? (
+              {mapNodesState ? (
                 <>
                   <label style={labelStyle}>新地图描述</label>
                   <textarea
@@ -351,7 +378,7 @@ export function BuildPanel({
                     disabled={mapBtnDisabled || !mapPrompt.trim()}
                     style={primaryBtnStyle(mapBtnDisabled || !mapPrompt.trim())}
                   >
-                    {isMapJobRunning ? "生成中..." : "生成新地图"}
+                    {isMapJobRunning ? "生成中..." : canAffordMapExpand ? "生成新地图" : "资源不足"}
                   </button>
                 </>
               ) : (
@@ -430,19 +457,9 @@ function LogBox({ logs }: { logs: string[] }) {
 // --- Styles ---
 
 const panelStyle: CSSProperties = {
-  position: "fixed",
-  top: "var(--top-ui-offset, 52px)",
-  right: 0,
-  width: 340,
-  height: "calc(100vh - var(--top-ui-offset, 52px))",
-  background: "linear-gradient(180deg, rgba(20,20,40,0.95), rgba(20,20,40,0.9))",
-  backdropFilter: "blur(8px)",
+  ...centeredWindowStyle(560, 840),
   display: "flex",
   flexDirection: "column",
-  zIndex: 90,
-  pointerEvents: "auto",
-  borderLeft: "1px solid rgba(255,255,255,0.08)",
-  boxShadow: "-4px 0 16px rgba(0,0,0,0.3)",
 };
 
 function panelBodyStyle(open: boolean): CSSProperties {
@@ -455,28 +472,6 @@ function panelBodyStyle(open: boolean): CSSProperties {
     transition: "opacity 0.2s",
   };
 }
-
-const toggleBtnStyle: CSSProperties = {
-  position: "absolute",
-  left: 0,
-  top: 16,
-  width: 36,
-  height: 48,
-  background: "linear-gradient(90deg, rgba(26,26,46,0.95), rgba(30,30,50,0.8))",
-  border: "1px solid rgba(255,255,255,0.15)",
-  borderRight: "none",
-  borderRadius: "8px 0 0 8px",
-  color: "#e0e0e0",
-  cursor: "pointer",
-  fontSize: 18,
-  transform: "translateX(-100%)",
-  zIndex: 91,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  boxShadow: "-2px 0 8px rgba(0,0,0,0.3)",
-  transition: "background 0.2s, color 0.2s",
-};
 
 const headerStyle: CSSProperties = {
   padding: "12px 16px",
@@ -500,14 +495,6 @@ const closeBtnStyle: CSSProperties = {
   width: 28,
   height: 28,
   opacity: 0.7,
-};
-
-const tabsStyle: CSSProperties = {
-  display: "flex",
-  gap: 6,
-  padding: "10px 14px",
-  borderBottom: "1px solid rgba(255,255,255,0.06)",
-  flexShrink: 0,
 };
 
 const bodyStyle: CSSProperties = {
@@ -626,21 +613,6 @@ const flashStyle: CSSProperties = {
   fontSize: 12,
   flexShrink: 0,
 };
-
-function tabBtnStyle(active: boolean): CSSProperties {
-  return {
-    background: active ? "rgba(0,184,148,0.18)" : "rgba(255,255,255,0.04)",
-    border: active
-      ? "1px solid rgba(0,184,148,0.45)"
-      : "1px solid rgba(255,255,255,0.1)",
-    color: active ? "#a3f7bf" : "#e0e0e0",
-    borderRadius: 999,
-    padding: "4px 12px",
-    fontSize: 12,
-    cursor: "pointer",
-    transition: "all 0.2s",
-  };
-}
 
 const logBoxStyle: CSSProperties = {
   marginTop: 8,

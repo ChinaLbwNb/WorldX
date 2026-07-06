@@ -9,6 +9,7 @@
     "create": "node orchestrator/src/index.mjs",
     "dev": "node scripts/dev.mjs",
     "stop": "node scripts/stop-dev.mjs",
+    "cleanup:data": "node scripts/cleanup-data.mjs",
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npm run dev",
     "compare:models": "node scripts/compare-models.mjs",

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import type { CSSProperties } from "react";
 import { apiClient } from "../services/api-client";
+import { networkManager } from "../../systems/NetworkManager";
 import type { SimulationEvent, CharacterInfo, LocationInfo } from "../../types/api";
+import { centeredWindowStyle, useFloatingWindowZIndex } from "../components/panel-styles";
 import {
   buildCharacterNameMap,
   buildLocationNameMap,
@@ -10,29 +13,47 @@ import {
   formatEventType,
 } from "../utils/event-format";
 
-export function Timeline() {
+export function Timeline({
+  open = true,
+  onClose,
+}: {
+  open?: boolean;
+  onClose?: () => void;
+}) {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [events, setEvents] = useState<SimulationEvent[]>([]);
   const [characters, setCharacters] = useState<CharacterInfo[]>([]);
   const [locations, setLocations] = useState<LocationInfo[]>([]);
   const [filterActor, setFilterActor] = useState<string>("");
+  const { zIndex, bringToFront } = useFloatingWindowZIndex(open, 840);
+
+  const close = () => {
+    if (onClose) {
+      onClose();
+      return;
+    }
+    navigate("/", { replace: true });
+  };
 
   useEffect(() => {
+    if (!open) return;
+    const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
     apiClient.getEvents({ limit: 200 }).then(setEvents).catch(console.warn);
-    apiClient.getCharacters().then(setCharacters).catch(console.warn);
-    apiClient.getLocations().then(setLocations).catch(console.warn);
-  }, []);
+    apiClient.getCharacters(userCharacterId).then(setCharacters).catch(console.warn);
+    apiClient.getLocations(userCharacterId).then(setLocations).catch(console.warn);
+  }, [open]);
 
   useEffect(() => {
+    if (!open) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        navigate("/", { replace: true });
+        close();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigate]);
+  }, [open, onClose, navigate]);
 
   const characterNames = useMemo(() => buildCharacterNameMap(characters), [characters]);
   const locationNames = useMemo(() => buildLocationNameMap(locations), [locations]);
@@ -49,38 +70,29 @@ export function Timeline() {
   }
   const days = Array.from(grouped.keys()).sort((a, b) => b - a);
 
-  return (
-    <>
-      <div
-        style={{
-          position: "fixed",
-          inset: 0,
-          width: "100vw",
-          height: "100vh",
-          background: "rgba(26, 26, 46, 0.96)",
-          overflow: "auto",
-          padding: "72px 40px 40px",
-          color: "#e0e0e0",
-          pointerEvents: "auto",
-          zIndex: 1200,
-        }}
-      >
-        <h2 style={{ textAlign: "center", fontSize: 18, marginBottom: 16 }}>
-          {t("timeline.title")}
-        </h2>
+  if (!open) return null;
 
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 20, gap: 8 }}>
+  return (
+    <aside style={{ ...panelStyle, zIndex }} onPointerDown={bringToFront}>
+      <header style={headerStyle}>
+        <div>
+          <div style={titleStyle}>{t("timeline.title")}</div>
+          <div style={subtitleStyle}>{events.length} 条事件</div>
+        </div>
+        <button
+          onClick={close}
+          style={closeButtonStyle}
+          title={t("timeline.backToWorld")}
+        >
+          ×
+        </button>
+      </header>
+
+      <div style={filterBarStyle}>
         <select
           value={filterActor}
           onChange={(e) => setFilterActor(e.target.value)}
-          style={{
-            background: "rgba(255,255,255,0.08)",
-            border: "1px solid rgba(255,255,255,0.15)",
-            color: "#e0e0e0",
-            borderRadius: 6,
-            padding: "4px 12px",
-            fontSize: 12,
-          }}
+          style={selectStyle}
         >
           <option value="">{t("timeline.allCharacters")}</option>
           {characters.map((c) => (
@@ -91,7 +103,10 @@ export function Timeline() {
         </select>
       </div>
 
-      <div style={{ maxWidth: 640, margin: "0 auto" }}>
+      <div className="custom-scrollbar" style={bodyStyle}>
+        <h2 style={{ display: "none" }}>
+          {t("timeline.title")}
+        </h2>
         {days.map((day) => (
           <div key={day} style={{ marginBottom: 24 }}>
             <h3
@@ -135,42 +150,66 @@ export function Timeline() {
           </div>
         )}
       </div>
-      </div>
-
-      <div
-        style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 56,
-          zIndex: 1300,
-          pointerEvents: "none",
-        }}
-      >
-        <button
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => navigate("/", { replace: true })}
-          style={{
-            position: "absolute",
-            top: 12,
-            left: 12,
-            background: "rgba(255,255,255,0.1)",
-            border: "1px solid rgba(255,255,255,0.2)",
-            color: "#e0e0e0",
-            borderRadius: 6,
-            padding: "6px 14px",
-            cursor: "pointer",
-            fontSize: 13,
-            pointerEvents: "auto",
-          }}
-        >
-          {t("timeline.backToWorld")}
-        </button>
-      </div>
-    </>
+    </aside>
   );
 }
+
+const panelStyle: CSSProperties = {
+  ...centeredWindowStyle(720, 840),
+};
+
+const headerStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "14px 14px 12px",
+  borderBottom: "1px solid rgba(255,255,255,0.1)",
+};
+
+const titleStyle: CSSProperties = {
+  fontSize: 16,
+  fontWeight: 800,
+};
+
+const subtitleStyle: CSSProperties = {
+  marginTop: 3,
+  fontSize: 12,
+  color: "rgba(238,244,255,0.62)",
+};
+
+const closeButtonStyle: CSSProperties = {
+  width: 30,
+  height: 30,
+  border: "1px solid rgba(255,255,255,0.14)",
+  background: "rgba(255,255,255,0.07)",
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 20,
+  lineHeight: "26px",
+};
+
+const filterBarStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "flex-end",
+  padding: "10px 12px 0",
+};
+
+const selectStyle: CSSProperties = {
+  background: "rgba(255,255,255,0.08)",
+  border: "1px solid rgba(255,255,255,0.15)",
+  color: "#e0e0e0",
+  borderRadius: 8,
+  padding: "6px 10px",
+  fontSize: 12,
+};
+
+const bodyStyle: CSSProperties = {
+  margin: 12,
+  paddingRight: 6,
+  maxHeight: "min(580px, calc(100vh - 160px))",
+  overflowY: "auto",
+  color: "#e0e0e0",
+};
 
 function typeColor(type: string): string {
   switch (type) {

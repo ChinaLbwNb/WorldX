@@ -4,6 +4,7 @@ import type Phaser from "phaser";
 import { apiClient } from "../services/api-client";
 import { networkManager } from "../../systems/NetworkManager";
 import type { CharacterInfo } from "../../types/api";
+import { darkGlassPanelStyle, darkGlassSubtlePanelStyle } from "../components/panel-styles";
 
 type ChatItem =
   | { id: string; kind: "player"; name: string; text: string; self: boolean }
@@ -25,21 +26,28 @@ export function PublicChatPanel({ eventBus }: { eventBus: Phaser.Events.EventEmi
 
   const myName = networkManager.getStoredName() || "我";
 
-  // 载入角色列表（用于 @ 匹配与补全），定期刷新
+  // 载入 NPC 列表（用于 @ 匹配与补全），定期刷新
   useEffect(() => {
     let cancelled = false;
     const load = () =>
       apiClient
-        .getCharacters()
+        .getCharacters(networkManager.getSelectedUserCharacterId() || undefined)
         .then((list) => !cancelled && setCharacters(list))
         .catch(() => {});
+    const refreshRoster = () => load();
     load();
+    eventBus.on("npc_roster_changed", refreshRoster);
+    eventBus.on("local_user_character_changed", refreshRoster);
+    eventBus.on("map_nodes_changed", refreshRoster);
     const timer = setInterval(load, 30000);
     return () => {
       cancelled = true;
+      eventBus.off("npc_roster_changed", refreshRoster);
+      eventBus.off("local_user_character_changed", refreshRoster);
+      eventBus.off("map_nodes_changed", refreshRoster);
       clearInterval(timer);
     };
-  }, []);
+  }, [eventBus]);
 
   const append = useCallback(
     (item: ChatItem) => {
@@ -74,12 +82,12 @@ export function PublicChatPanel({ eventBus }: { eventBus: Phaser.Events.EventEmi
       append({ id: nextId(), kind: "system", text: `${d.characterName} 没能回应（${d.reason}）` });
     };
 
-    eventBus.on("player_chat", onPlayerChat);
+    eventBus.on("user_character_chat", onPlayerChat);
     eventBus.on("npc_typing", onNpcTyping);
     eventBus.on("npc_chat", onNpcChat);
     eventBus.on("npc_chat_error", onNpcError);
     return () => {
-      eventBus.off("player_chat", onPlayerChat);
+      eventBus.off("user_character_chat", onPlayerChat);
       eventBus.off("npc_typing", onNpcTyping);
       eventBus.off("npc_chat", onNpcChat);
       eventBus.off("npc_chat_error", onNpcError);
@@ -165,7 +173,18 @@ export function PublicChatPanel({ eventBus }: { eventBus: Phaser.Events.EventEmi
   if (!open) {
     return (
       <button onClick={() => setOpen(true)} style={launcherStyle}>
-        💬 公屏
+        <img
+          src="/ui/icons/chat.png"
+          alt=""
+          draggable={false}
+          style={{
+            width: 28,
+            height: 28,
+            objectFit: "contain",
+            filter: "drop-shadow(0 3px 8px rgba(58, 178, 255, 0.22))",
+          }}
+        />
+        <span>公屏</span>
         {unread > 0 && <span style={badgeStyle}>{unread > 99 ? "99+" : unread}</span>}
       </button>
     );
@@ -176,7 +195,7 @@ export function PublicChatPanel({ eventBus }: { eventBus: Phaser.Events.EventEmi
       <div style={headerStyle}>
         <span style={{ fontWeight: 700, fontSize: 13 }}>💬 公屏聊天</span>
         <span style={{ fontSize: 10, opacity: 0.5, marginLeft: "auto", marginRight: 8 }}>
-          @角色名 可与 AI 对话
+          @NPC 名 可与 NPC 对话
         </span>
         <button onClick={() => setOpen(false)} style={iconBtnStyle} title="收起">
           —
@@ -186,7 +205,7 @@ export function PublicChatPanel({ eventBus }: { eventBus: Phaser.Events.EventEmi
       <div ref={scrollRef} style={scrollStyle}>
         {items.length === 0 && (
           <div style={{ opacity: 0.4, fontSize: 12, textAlign: "center", padding: 16 }}>
-            说点什么吧。试试 <b>@</b> 一个 AI 角色聊天。
+            说点什么吧。试试 <b>@</b> 一个 NPC 聊天。
           </div>
         )}
         {items.map((m) => {
@@ -233,7 +252,7 @@ export function PublicChatPanel({ eventBus }: { eventBus: Phaser.Events.EventEmi
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="输入消息，@角色名 与 AI 对话"
+          placeholder="输入消息，@NPC 名 与 NPC 对话"
           style={inputStyle}
           maxLength={300}
         />
@@ -250,14 +269,12 @@ const panelStyle: CSSProperties = {
   position: "fixed",
   left: 16,
   bottom: 16,
-  width: 340,
-  height: "min(46vh, 460px)",
+  width: "min(340px, calc(100vw - 32px))",
+  height: "min(34vh, 320px)",
   display: "flex",
   flexDirection: "column",
-  background: "linear-gradient(180deg, rgba(10,18,34,0.95), rgba(8,12,24,0.95))",
-  border: "1px solid rgba(120,180,255,0.2)",
+  ...darkGlassPanelStyle,
   borderRadius: 12,
-  boxShadow: "0 16px 44px rgba(0,0,0,0.5)",
   color: "#e6ecf7",
   zIndex: 450,
   pointerEvents: "auto",
@@ -270,22 +287,20 @@ const launcherStyle: CSSProperties = {
   bottom: 16,
   zIndex: 450,
   pointerEvents: "auto",
-  background: "linear-gradient(135deg, #3a6dc9, #4a8bff)",
-  color: "#fff",
-  border: "none",
-  borderRadius: 22,
-  padding: "10px 16px",
+  ...darkGlassSubtlePanelStyle,
+  color: "#eef4ff",
+  borderRadius: 18,
+  padding: "7px 12px 7px 8px",
   fontSize: 13,
-  fontWeight: 600,
+  fontWeight: 900,
   cursor: "pointer",
-  boxShadow: "0 6px 18px rgba(0,0,0,0.4)",
   display: "flex",
   alignItems: "center",
-  gap: 6,
+  gap: 7,
 };
 
 const badgeStyle: CSSProperties = {
-  background: "#ff4d4f",
+  background: "linear-gradient(135deg, #ff4d4f, #ff8f70)",
   color: "#fff",
   borderRadius: 10,
   padding: "0 6px",
@@ -390,11 +405,9 @@ const suggestBoxStyle: CSSProperties = {
   right: 10,
   bottom: "100%",
   marginBottom: 6,
-  background: "#10182a",
-  border: "1px solid rgba(120,180,255,0.3)",
+  ...darkGlassPanelStyle,
   borderRadius: 8,
   overflow: "hidden",
-  boxShadow: "0 8px 20px rgba(0,0,0,0.5)",
 };
 
 const suggestItemStyle: CSSProperties = {

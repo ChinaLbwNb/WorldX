@@ -3,6 +3,10 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import { appContext } from "../../services/app-context.js";
 import { generateId } from "../../utils/id-generator.js";
+import { getRequestUserId } from "../request-user.js";
+import { canUserAccessWorld, findWorldById } from "../../utils/world-directories.js";
+import { resolveScopedCharacterRuntime } from "../../utils/scoped-character-runtime.js";
+import { recordTutorialTaskEvent } from "../../store/tutorial-task-store.js";
 
 /**
  * 架空对话（Sandbox Chat）
@@ -15,6 +19,11 @@ import { generateId } from "../../utils/id-generator.js";
 interface SandboxSession {
   id: string;
   characterId: string;
+  userCharacterId?: string;
+  worldId?: string;
+  timelineId?: string;
+  mapId?: string;
+  worldDir?: string;
   userIdentity: string;
   createdAt: number;
   lastActiveAt: number;
@@ -47,9 +56,40 @@ const ReplySchema = z.object({ reply: z.string().min(1) });
 
 const router = Router();
 
+function resolveSandboxScope(req: Request, res: Response): { userCharacterId?: string; worldId?: string; timelineId?: string; mapId?: string; worldDir?: string } | null {
+  const userCharacterId = typeof req.body?.userCharacterId === "string" ? req.body.userCharacterId.trim() : "";
+  if (!userCharacterId) return {};
+
+  const userId = getRequestUserId(req);
+  const character = appContext.playerManager.getPlayer(userCharacterId, userId);
+  if (!character) {
+    res.status(404).json({ error: "User character not found" });
+    return null;
+  }
+
+  const presence = appContext.playerManager.getPlayerPresence(userCharacterId);
+  const world = findWorldById(presence.worldId);
+  if (!world) {
+    res.status(404).json({ error: "World not found for character presence" });
+    return null;
+  }
+  if (!canUserAccessWorld(world, userId)) {
+    res.status(403).json({ error: "You do not have access to this world" });
+    return null;
+  }
+
+  return {
+    userCharacterId,
+    worldId: presence.worldId,
+    timelineId: presence.timelineId,
+    mapId: presence.currentMapId,
+    worldDir: world.dir,
+  };
+}
+
 /**
  * POST /api/sandbox/chat/start
- * body: { characterId: string, userIdentity?: string }
+ * body: { characterId: string, userIdentity?: string, userCharacterId?: string }
  */
 router.post("/start", (req: Request, res: Response) => {
   reapExpired();
@@ -59,9 +99,13 @@ router.post("/start", (req: Request, res: Response) => {
     return res.status(400).json({ error: "characterId is required" });
   }
 
+  const scope = resolveSandboxScope(req, res);
+  if (res.headersSent || !scope) return;
+
+  let runtime;
   try {
-    appContext.characterManager.getProfile(characterId);
-  } catch {
+    runtime = resolveScopedCharacterRuntime(appContext, characterId, scope.worldDir);
+  } catch (error) {
     return res.status(404).json({ error: "character not found" });
   }
 
@@ -70,6 +114,11 @@ router.post("/start", (req: Request, res: Response) => {
   const session: SandboxSession = {
     id,
     characterId,
+    userCharacterId: scope.userCharacterId,
+    worldId: scope.worldId,
+    timelineId: scope.timelineId,
+    mapId: scope.mapId,
+    worldDir: scope.worldDir,
     userIdentity: typeof userIdentity === "string" ? userIdentity.trim() : "",
     createdAt: now,
     lastActiveAt: now,
@@ -77,7 +126,7 @@ router.post("/start", (req: Request, res: Response) => {
   };
   sessions.set(id, session);
 
-  const profile = appContext.characterManager.getProfile(characterId);
+  const profile = runtime.profile;
 
   return res.json({
     ok: true,
@@ -108,8 +157,11 @@ router.post("/message", async (req: Request, res: Response) => {
   const session = sessions.get(sessionId)!;
   const userMsg = message.trim();
 
-  const profile = appContext.characterManager.getProfile(session.characterId);
-  const state = appContext.characterManager.getState(session.characterId);
+  const { profile, state, isActiveRuntimeWorld } = resolveScopedCharacterRuntime(
+    appContext,
+    session.characterId,
+    session.worldDir,
+  );
   const gameTime = appContext.worldManager.getCurrentTime();
 
   // 上下文关键词：对方的话 + 对话历史最后几句中的内容，用来挑出更相关的记忆
@@ -122,13 +174,15 @@ router.post("/message", async (req: Request, res: Response) => {
     .filter((k) => k.length >= 2)
     .slice(0, 20);
 
-  const memories = appContext.characterManager.memoryManager.retrieveMemories({
-    characterId: session.characterId,
-    currentTime: gameTime,
-    contextKeywords,
-    relatedLocation: state.location,
-    topK: 8,
-  });
+  const memories = isActiveRuntimeWorld
+    ? appContext.characterManager.memoryManager.retrieveMemories({
+        characterId: session.characterId,
+        currentTime: gameTime,
+        contextKeywords,
+        relatedLocation: state.location,
+        topK: 8,
+      })
+    : [];
 
   const memoriesBlock =
     memories.length > 0
@@ -163,6 +217,7 @@ router.post("/message", async (req: Request, res: Response) => {
       session.history.splice(0, session.history.length - MAX_HISTORY);
     }
     session.lastActiveAt = Date.now();
+    recordTutorialTaskEvent(getRequestUserId(req), "talk_to_npc");
 
     return res.json({
       ok: true,
@@ -209,6 +264,10 @@ router.get("/:sessionId", (req: Request, res: Response) => {
     ok: true,
     sessionId: s.id,
     characterId: s.characterId,
+    userCharacterId: s.userCharacterId,
+    worldId: s.worldId,
+    timelineId: s.timelineId,
+    mapId: s.mapId,
     userIdentity: s.userIdentity,
     history: s.history,
   });
