@@ -1,0 +1,152 @@
+[
+  {
+    "id": "hist_01",
+    "domain": "historical",
+    "prompt": "北宋汴京夜市，一条临河街道上有茶摊、当铺、药铺和巡夜差役，商贩与行人往来频繁。"
+  },
+  {
+    "id": "hist_02",
+    "domain": "historical",
+    "prompt": "明代边境驿站，风沙中的土墙院落连接马厩、客房、烽火台和补给仓，旅人与守军共同生活。"
+  },
+  {
+    "id": "hist_03",
+    "domain": "historical",
+    "prompt": "江南水乡清晨集市，石桥、码头、布庄、米铺和茶馆沿河分布，船夫与居民穿行其间。"
+  },
+  {
+    "id": "urban_01",
+    "domain": "modern_urban",
+    "prompt": "凌晨两点的城市便利店街区，有24小时便利店、洗衣房、出租车停靠点和居民公寓。"
+  },
+  {
+    "id": "urban_02",
+    "domain": "modern_urban",
+    "prompt": "老旧商业街正在改造，咖啡店、修理铺、社区广场和施工围挡形成复杂的人流动线。"
+  },
+  {
+    "id": "urban_03",
+    "domain": "modern_urban",
+    "prompt": "雨夜里的大型交通枢纽周边，地铁口、便利店、候车区和高架桥下空间彼此连接。"
+  },
+  {
+    "id": "scifi_01",
+    "domain": "science_fiction",
+    "prompt": "火星殖民站的生活区，有气闸、温室、维修舱、能源中心和共享食堂，居民依赖有限资源生存。"
+  },
+  {
+    "id": "scifi_02",
+    "domain": "science_fiction",
+    "prompt": "赛博朋克地下黑市，霓虹巷道连接义体诊所、数据交易摊位、废品店和隐蔽酒吧。"
+  },
+  {
+    "id": "scifi_03",
+    "domain": "science_fiction",
+    "prompt": "漂浮在木星轨道上的科研站，观测舱、实验室、休眠区和应急避难舱通过环形通道连接。"
+  },
+  {
+    "id": "fantasy_01",
+    "domain": "fantasy",
+    "prompt": "精灵边境村庄坐落在古树与溪流之间，有树屋议事厅、药草园、训练场和守望塔。"
+  },
+  {
+    "id": "fantasy_02",
+    "domain": "fantasy",
+    "prompt": "被火山灰覆盖的矮人矿镇，熔炉、矿井入口、酒馆和货运平台围绕中央升降机分布。"
+  },
+  {
+    "id": "fantasy_03",
+    "domain": "fantasy",
+    "prompt": "荒野中的魔法学院前哨站，有符文庭院、图书塔、炼金工坊和被封印的地下入口。"
+  },
+  {
+    "id": "mystery_01",
+    "domain": "mystery",
+    "prompt": "暴风雪封山后的山庄旅馆，客房、餐厅、锅炉房、储藏室和被锁住的旧书房构成封闭空间。"
+  },
+  {
+    "id": "mystery_02",
+    "domain": "mystery",
+    "prompt": "海边小镇发生失踪案，警署、码头仓库、旅馆、灯塔和废弃鱼市之间隐藏着线索。"
+  },
+  {
+    "id": "mystery_03",
+    "domain": "mystery",
+    "prompt": "停电后的大学研究楼，实验室、机房、档案室和安全出口在昏暗走廊中连接。"
+  },
+  {
+    "id": "survival_01",
+    "domain": "disaster_survival",
+    "prompt": "洪水后的临时避难所建在体育馆周边，有医疗点、物资仓、临时厨房和发电机区域。"
+  },
+  {
+    "id": "survival_02",
+    "domain": "disaster_survival",
+    "prompt": "沙尘暴中的公路补给站，停车区、加油区、维修间、储水设施和封闭休息室组成生存据点。"
+  },
+  {
+    "id": "survival_03",
+    "domain": "disaster_survival",
+    "prompt": "长期停电后的城市社区自救点，居民在中庭建立水源、菜园、医疗角和物资交换区。"
+  },
+  {
+    "id": "campus_01",
+    "domain": "school_campus",
+    "prompt": "高中社团文化节前夜，教学楼、礼堂、社团教室、操场和便利店仍有人忙碌准备。"
+  },
+  {
+    "id": "campus_02",
+    "domain": "school_campus",
+    "prompt": "寄宿制学校的周末下午，宿舍、图书馆、篮球场、食堂和湖边步道形成学生社交空间。"
+  },
+  {
+    "id": "campus_03",
+    "domain": "school_campus",
+    "prompt": "艺术学院毕业展布展日，工作室、展厅、材料仓、咖啡角和装卸区同时运转。"
+  },
+  {
+    "id": "work_01",
+    "domain": "workplace",
+    "prompt": "创业公司产品发布前一晚，开放办公区、会议室、服务器间、茶水间和直播间都处于高压状态。"
+  },
+  {
+    "id": "work_02",
+    "domain": "workplace",
+    "prompt": "大型医院夜班区域，急诊大厅、护士站、药房、休息室和后勤通道持续运转。"
+  },
+  {
+    "id": "work_03",
+    "domain": "workplace",
+    "prompt": "机场地勤中心的凌晨班次，调度室、员工休息区、器材仓和机坪入口协同工作。"
+  },
+  {
+    "id": "social_01",
+    "domain": "social_relationship",
+    "prompt": "海边合宿恋爱真人秀第七夜，别墅客厅、露台、厨房、泳池和匿名留言区承载复杂关系。"
+  },
+  {
+    "id": "social_02",
+    "domain": "social_relationship",
+    "prompt": "多年未见的高中同学在乡村民宿重聚，院子、餐厅、客房、河边和旧教室遗址触发回忆。"
+  },
+  {
+    "id": "social_03",
+    "domain": "social_relationship",
+    "prompt": "六位陌生人共同经营临时咖啡馆，前台、后厨、仓库、露台和员工休息区形成合作与冲突。"
+  },
+  {
+    "id": "surreal_01",
+    "domain": "surreal_open",
+    "prompt": "一座只在午夜出现的车站，空站台、无人的售票厅、钟塔、候车室和通往雾中的轨道彼此连接。"
+  },
+  {
+    "id": "surreal_02",
+    "domain": "surreal_open",
+    "prompt": "漂浮在云海上的旧图书馆，阅读厅、天文台、温室、旋转楼梯和失重档案室构成奇异空间。"
+  },
+  {
+    "id": "surreal_03",
+    "domain": "surreal_open",
+    "prompt": "时间循环中的海港小镇，每天黄昏重置，码头、钟表店、酒馆、广场和废弃仓库保留微妙变化。"
+  }
+]
