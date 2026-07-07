@@ -25,12 +25,13 @@ export async function generateMap(userPrompt, worldDesign, save, { originalUserP
   const GENERATE_TIMEOUT_MS = parseInt(process.env.STEP1_GENERATE_TIMEOUT_MS || "180000", 10);
   const REVIEW_TIMEOUT_MS = parseInt(process.env.STEP1_REVIEW_TIMEOUT_MS || "90000", 10);
   const ADJUST_TIMEOUT_MS = parseInt(process.env.STEP1_ADJUST_TIMEOUT_MS || "90000", 10);
+  const disableMapStructureConditioning = process.env.WORLDX_ABLATION_DISABLE_MAP_STRUCTURE_CONDITIONING === "1";
   let additionalConstraints = "";
   let mapBuffer = null;
   const totalAttempts = MAX_RETRIES + 1;
-  const mapPlanSummary = formatMapPlanSummary(worldDesign);
-  const regionSummary = formatRegionSummary(worldDesign);
-  const elementSummary = formatElementSummary(worldDesign);
+  const mapPlanSummary = disableMapStructureConditioning ? "" : formatMapPlanSummary(worldDesign);
+  const regionSummary = disableMapStructureConditioning ? "" : formatRegionSummary(worldDesign);
+  const elementSummary = disableMapStructureConditioning ? "" : formatElementSummary(worldDesign);
 
   for (let attempt = 1; attempt <= totalAttempts; attempt++) {
     console.log(`[Step 1] Generating map (attempt ${attempt}/${totalAttempts})...`);
