@@ -46,9 +46,20 @@ The preflight exited with code `2`, as designed when required generation credent
 
 The pilot comparator is matched by prompt ID: ablated runs are paired with the corresponding `full` run for the same prompt before deltas are computed.
 
+A synthetic matched-comparison test was executed with three prompt IDs across all three variants. The test asserted:
+
+- matched pair count = `3`
+- `first_pass_no_repair.deltaE2E = -1/3`
+- `first_pass_no_repair.deltaLatencyMs = -40`
+- `no_map_structure_conditioning.deltaRegionRetention = -1/3`
+
+All assertions passed.
+
 ## Conclusion
 
 The repository now has a concrete, fixed pilot protocol for comparing the same prompts across three variants.
+
+The matched comparator has passed a synthetic logic test for prompt pairing and selected delta calculations.
 
 The current task execution environment is **not capable of running the real-model pilot** because the required generation credentials are unavailable there.
 
@@ -60,7 +71,7 @@ This is an environment limitation, not evidence that the WorldX project configur
 - The full system is better than either ablation.
 - Review-driven regeneration improves quality.
 - Structured map conditioning improves quality.
-- The pilot scripts are production-ready solely because syntax checks passed.
+- The pilot scripts are production-ready solely because syntax and synthetic checks passed.
 
 ## Next step
 
