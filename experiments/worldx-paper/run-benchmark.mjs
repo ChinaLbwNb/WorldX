@@ -92,19 +92,25 @@ const worldRoot = path.resolve(args.worldRoot || path.join(REPO_ROOT, "output", 
 const timeoutMs = Number.parseInt(String(args.timeoutMs || "1800000"), 10);
 const limit = args.limit ? Number.parseInt(String(args.limit), 10) : null;
 const dryRun = args["dry-run"] === true;
+const variantsFile = path.resolve(args.variants || path.join(__dirname, "variants.v0.json"));
+const variants = JSON.parse(fs.readFileSync(variantsFile, "utf-8"));
+const variantName = String(args.variant || "full");
+const variant = variants[variantName];
+if (!variant) throw new Error(`unknown variant: ${variantName}`);
+const experimentEnv = { ...process.env, ...(variant.env || {}) };
 
 fs.mkdirSync(outDir, { recursive: true });
 const allPrompts = readPrompts(promptsFile);
 const prompts = limit ? allPrompts.slice(0, limit) : allPrompts;
 const jsonlPath = path.join(outDir, "runs.jsonl");
 
-console.log(`[Experiment] prompts=${prompts.length} out=${outDir}`);
+console.log(`[Experiment] variant=${variantName} prompts=${prompts.length} out=${outDir}`);
 
 for (let index = 0; index < prompts.length; index += 1) {
   const item = prompts[index];
   console.log(`\n[Experiment] ${index + 1}/${prompts.length} ${item.id} (${item.domain})`);
   if (dryRun) {
-    const result = { id: item.id, domain: item.domain, prompt: item.prompt, dryRun: true };
+    const result = { id: item.id, domain: item.domain, prompt: item.prompt, variant: variantName, dryRun: true };
     appendJsonl(jsonlPath, result);
     continue;
   }
@@ -113,7 +119,7 @@ for (let index = 0; index < prompts.length; index += 1) {
   const processResult = await runProcess(
     process.execPath,
     [path.join(REPO_ROOT, "orchestrator", "src", "index.mjs"), item.prompt],
-    { cwd: REPO_ROOT, env: process.env, timeoutMs },
+    { cwd: REPO_ROOT, env: experimentEnv, timeoutMs },
   );
   const worldDir = detectNewWorldDir(worldRoot, before, processResult.stdout);
   let validation = null;
@@ -125,6 +131,7 @@ for (let index = 0; index < prompts.length; index += 1) {
     id: item.id,
     domain: item.domain,
     prompt: item.prompt,
+    variant: variantName,
     exitCode: processResult.code,
     signal: processResult.signal,
     durationMs: processResult.durationMs,
