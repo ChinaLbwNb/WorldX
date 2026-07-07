@@ -28,7 +28,35 @@ node experiments/worldx-paper/run-benchmark.mjs \
 
 Each prompt is executed sequentially. The runner records process status, generation latency, detected world directory, stage-level validation, retention, and reachability metrics.
 
-## 4. Summarize
+## 4. Run ablation variants
+
+Variant definitions live in `variants.v0.json`.
+
+Full system:
+
+```bash
+node experiments/worldx-paper/run-benchmark.mjs \
+  --variant full \
+  --limit 30
+```
+
+First-pass map without review-driven regeneration:
+
+```bash
+node experiments/worldx-paper/run-benchmark.mjs \
+  --variant first_pass_no_repair \
+  --limit 30
+```
+
+Remove structured map-plan, region, and interactive-element summaries from the map generation and review prompts:
+
+```bash
+node experiments/worldx-paper/run-benchmark.mjs \
+  --variant no_map_structure_conditioning \
+  --limit 30
+```
+
+## 5. Summarize
 
 ```bash
 node experiments/worldx-paper/summarize-results.mjs \
