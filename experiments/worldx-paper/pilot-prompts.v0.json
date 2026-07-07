@@ -1,0 +1,27 @@
+[
+  {
+    "id": "hist_01",
+    "domain": "historical",
+    "prompt": "北宋汴京夜市，一条临河街道上有茶摊、当铺、药铺和巡夜差役，商贩与行人往来频繁。"
+  },
+  {
+    "id": "urban_01",
+    "domain": "modern_urban",
+    "prompt": "凌晨两点的城市便利店街区，有24小时便利店、洗衣房、出租车停靠点和居民公寓。"
+  },
+  {
+    "id": "scifi_01",
+    "domain": "science_fiction",
+    "prompt": "火星殖民站的生活区，有气闸、温室、维修舱、能源中心和共享食堂，居民依赖有限资源生存。"
+  },
+  {
+    "id": "mystery_01",
+    "domain": "mystery",
+    "prompt": "暴风雪封山后的山庄旅馆，客房、餐厅、锅炉房、储藏室和被锁住的旧书房构成封闭空间。"
+  },
+  {
+    "id": "social_01",
+    "domain": "social_relationship",
+    "prompt": "海边合宿恋爱真人秀第七夜，别墅客厅、露台、厨房、泳池和匿名留言区承载复杂关系。"
+  }
+]
