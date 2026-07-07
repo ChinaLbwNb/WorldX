@@ -56,7 +56,53 @@ node experiments/worldx-paper/run-benchmark.mjs \
   --limit 30
 ```
 
-## 5. Summarize
+## 5. Run the fixed matched pilot
+
+First verify that the current runtime has the required generation credentials without printing secret values:
+
+```bash
+node experiments/worldx-paper/check-env.mjs
+```
+
+Then run the same five prompts across all three variants:
+
+```bash
+node experiments/worldx-paper/run-pilot.mjs \
+  --id pilot-v0
+```
+
+This produces:
+
+```text
+experiments/worldx-paper/pilot-results/pilot-v0/
+├── pilot-manifest.json
+├── full/
+├── first_pass_no_repair/
+└── no_map_structure_conditioning/
+```
+
+Compare matched runs by prompt ID:
+
+```bash
+node experiments/worldx-paper/compare-pilot.mjs \
+  --pilot experiments/worldx-paper/pilot-results/pilot-v0
+```
+
+The comparator writes:
+
+```text
+comparison.json
+```
+
+The pilot is intentionally small:
+
+- 5 fixed prompts
+- 3 variants
+- 15 total generation attempts
+
+Its purpose is to validate metric sensitivity and failure modes before expanding to 30 or 100 prompts.
+
+## 6. Summarize
 
 ```bash
 node experiments/worldx-paper/summarize-results.mjs \
