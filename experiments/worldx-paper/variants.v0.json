@@ -1,0 +1,18 @@
+{
+  "full": {
+    "description": "Full WorldX pipeline",
+    "env": {}
+  },
+  "first_pass_no_repair": {
+    "description": "Use one map generation attempt; disables review-driven regeneration while retaining first-pass review logging",
+    "env": {
+      "STEP1_MAX_RETRIES": "0"
+    }
+  },
+  "no_map_structure_conditioning": {
+    "description": "Remove map plan, region, and interactive-element summaries from map generation/review prompts",
+    "env": {
+      "WORLDX_ABLATION_DISABLE_MAP_STRUCTURE_CONDITIONING": "1"
+    }
+  }
+}
