@@ -57,6 +57,8 @@ async function main() {
     image: relative(ROOT, imagePath),
     imageWidth: width,
     imageHeight: height,
+    worldName: worldDesign.worldName || "",
+    mapDescription: worldDesign.mapDescription || "",
     targets,
   };
   const outPath = resolve(args.out);
