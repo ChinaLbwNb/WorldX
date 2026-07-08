@@ -1,13 +1,17 @@
+import dotenv from "dotenv";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { dirname, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
-import { spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../../..");
+dotenv.config({ path: join(ROOT, ".env") });
+
 const WORLDS_DIR = join(ROOT, "output/worlds");
 const DEFAULT_PROMPTS = join(ROOT, "paper/worldx-map/benchmark/pilot-prompts.json");
 const DEFAULT_MANIFEST = join(ROOT, "paper/worldx-map/runs/pilot-manifest.json");
+const PROTOCOL_PATH = join(ROOT, "paper/worldx-map/configs/rq2-pilot.json");
 
 function parseArgs(argv) {
   const args = {};
@@ -40,6 +44,33 @@ function saveManifest(path, manifest) {
   mkdirSync(dirname(path), { recursive: true });
   manifest.updatedAt = new Date().toISOString();
   writeFileSync(path, JSON.stringify(manifest, null, 2));
+}
+
+function gitCommit() {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf-8" }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+function buildProvenance() {
+  const protocol = existsSync(PROTOCOL_PATH)
+    ? JSON.parse(readFileSync(PROTOCOL_PATH, "utf-8"))
+    : {};
+  return {
+    capturedAt: new Date().toISOString(),
+    gitCommit: gitCommit(),
+    nodeVersion: process.version,
+    protocolVersion: protocol.version || "unknown",
+    models: {
+      orchestrator: process.env.ORCHESTRATOR_MODEL || "",
+      imageGeneration: process.env.IMAGE_GEN_MODEL || "",
+      imageProvider: process.env.IMAGE_GEN_PROVIDER || "openai-compatible",
+      vision: process.env.VISION_MODEL || "",
+      simulation: process.env.SIMULATION_MODEL || "",
+    },
+  };
 }
 
 function runWorldGeneration(prompt, env) {
@@ -81,6 +112,7 @@ async function main() {
   const manifest = readManifest(manifestPath);
   manifest.promptSetVersion = promptSet.version;
   manifest.promptSetPath = relative(ROOT, promptsPath);
+  manifest.provenance ||= buildProvenance();
   const continueOnError = args["continue-on-error"] === "1";
 
   for (const item of prompts) {
