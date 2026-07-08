@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0",
+  "mapId": "P01",
+  "imageWidth": 1024,
+  "imageHeight": 576,
+  "annotatorId": "A1",
+  "targets": [
+    {
+      "id": "pawn_shop",
+      "type": "region",
+      "present": true,
+      "bbox": { "x1": 86, "y1": 104, "x2": 374, "y2": 352 },
+      "confidence": "high",
+      "note": "Box covers the enterable interior footprint."
+    },
+    {
+      "id": "public_well",
+      "type": "element",
+      "present": true,
+      "bbox": { "x1": 631, "y1": 238, "x2": 707, "y2": 312 },
+      "confidence": "medium",
+      "note": "Small object; include the visible stone rim."
+    },
+    {
+      "id": "missing_target_example",
+      "type": "element",
+      "present": false,
+      "bbox": null,
+      "confidence": "high",
+      "note": "Requested target is not visibly present in the generated map."
+    }
+  ]
+}
