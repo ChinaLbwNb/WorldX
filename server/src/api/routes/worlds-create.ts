@@ -5,6 +5,7 @@ import {
   JobConflictError,
   type JobEvent,
 } from "../../core/create-job-manager.js";
+import { getRequestUserId } from "../request-user.js";
 
 const router = Router();
 
@@ -24,7 +25,12 @@ router.post("/create", (req, res) => {
   }
 
   try {
-    const { jobId } = createJobManager.startJob({ prompt, sizeK, keepArtifacts });
+    const { jobId } = createJobManager.startJob({
+      prompt,
+      sizeK,
+      keepArtifacts,
+      ownerUserId: getRequestUserId(req),
+    });
     res.json({ ok: true, jobId });
   } catch (err) {
     if (err instanceof JobConflictError) {

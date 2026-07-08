@@ -16,8 +16,6 @@ import {
   formatEventSummary,
   formatEventType,
 } from "../utils/event-format";
-import { CharacterAvatar } from "../components/CharacterAvatar";
-import { useDialogueStyle } from "../hooks/useDialogueStyle";
 
 type Tab = "history" | "memory";
 type DialogueTurnRecord = {
@@ -102,8 +100,6 @@ export function CharacterDetail({
   const [editBusy, setEditBusy] = useState(false);
   const [editFlash, setEditFlash] = useState<string | null>(null);
   const { t } = useTranslation();
-
-  const imStyle = useDialogueStyle() === "im";
 
   if (!detail) return null;
 
@@ -249,43 +245,6 @@ export function CharacterDetail({
                 </span>
               </div>
               {record.kind === "dialogue_turn" ? (
-                imStyle ? (
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 2 }}>
-                    <CharacterAvatar
-                      characterId={record.speakerId}
-                      name={characterNames[record.speakerId] || record.speakerId}
-                      colorIndex={characters.findIndex((c) => c.id === record.speakerId)}
-                      size={28}
-                    />
-                    <div style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
-                      <div style={{ color: "#74b9ff", fontSize: 11, fontWeight: 600 }}>
-                        {characterNames[record.speakerId] || record.speakerId}
-                      </div>
-                      <div
-                        style={{
-                          alignSelf: "flex-start",
-                          background: "rgba(255,255,255,0.07)",
-                          border: "1px solid rgba(120,180,255,0.15)",
-                          color: "#e0e6f2",
-                          padding: "6px 10px",
-                          borderRadius: "4px 12px 12px 12px",
-                          maxWidth: "92%",
-                          lineHeight: 1.5,
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                          overflowWrap: "anywhere",
-                        }}
-                      >
-                        {record.content}
-                      </div>
-                      {record.innerMonologue && (
-                        <div title={t("charDetail.innerMonologueTitle")} style={{ marginTop: 2, paddingLeft: 10, borderLeft: "2px dashed rgba(179, 157, 219, 0.45)", fontStyle: "italic", color: "#b39ddb", opacity: 0.88 }}>
-                          💭 {record.innerMonologue}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ) : (
                 <>
                   <div style={{ color: "#ddd", lineHeight: 1.5 }}>
                     <span style={{ color: "#74b9ff", fontWeight: 600 }}>
@@ -318,7 +277,6 @@ export function CharacterDetail({
                     </div>
                   )}
                 </>
-                )
               ) : (
                 <>
                   <div style={{ color: "#ddd", lineHeight: 1.5 }}>

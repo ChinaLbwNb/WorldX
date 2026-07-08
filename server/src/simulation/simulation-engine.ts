@@ -10,6 +10,7 @@ import type {
 } from "../types/index.js";
 import type { WorldManager } from "../core/world-manager.js";
 import type { CharacterManager } from "../core/character-manager.js";
+import type { PlayerManager } from "../core/player-manager.js";
 import type { LLMClient } from "../llm/llm-client.js";
 import type { PromptBuilder } from "../llm/prompt-builder.js";
 import { DecisionMaker } from "./decision-maker.js";
@@ -59,6 +60,7 @@ export class SimulationEngine {
   constructor(
     private worldManager: WorldManager,
     private characterManager: CharacterManager,
+    private playerManager: PlayerManager,
     private llmClient: LLMClient,
     private promptBuilder: PromptBuilder,
   ) {
@@ -100,6 +102,9 @@ export class SimulationEngine {
 
     for (const char of allChars) {
       try {
+        // 静态角色不参与AI决策
+        if (char.isStatic) continue;
+
         const shouldDecide = this.prepareCharacterForTick(
           char.id,
           gameTime,
@@ -513,6 +518,7 @@ export class SimulationEngine {
           this.worldManager,
           this.characterManager,
           gameTime,
+          this.playerManager,
         );
 
         this.maybeGenerateObservationMemory(charId, perception, gameTime, events);

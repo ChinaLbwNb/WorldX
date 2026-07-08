@@ -35,7 +35,8 @@ function run(name, cmd, args, cwd) {
     console.log(
       `[${name}] exited (${signal ? `signal ${signal}` : code ?? "unknown"})`,
     );
-    if (!shuttingDown) {
+    // ECONNRESET 是浏览器断连，不需要关闭整个服务
+    if (!shuttingDown && code !== 1 && signal !== "SIGTERM") {
       void shutdown(1);
     }
   });

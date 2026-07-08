@@ -29,11 +29,16 @@ interface WalkablePlacementPreference {
 
 const MAIN_AREA_OCCUPANCY_RADIUS_PX = 24;
 
+function tileKey(gx: number, gy: number): string {
+  return `${gx},${gy}`;
+}
+
 export class MapManager {
   collisionGrid: number[][] = [];
   gridWidth = 0;
   gridHeight = 0;
   tileSize = TILE_SIZE;
+  private placementBlockedTiles: Set<string> = new Set();
 
   locations: Map<string, LocationRect> = new Map();
   interactiveObjects: Map<string, InteractiveObject> = new Map();
@@ -48,6 +53,7 @@ export class MapManager {
     this.interactiveObjects.clear();
     this.mainAreaPoints.clear();
     this.walkableComponentCache.clear();
+    this.placementBlockedTiles.clear();
 
     for (const layer of json.layers) {
       if (layer.type === "tilelayer" && layer.name === "collision") {
@@ -137,7 +143,35 @@ export class MapManager {
 
   isWalkable(gx: number, gy: number): boolean {
     if (gx < 0 || gy < 0 || gx >= this.gridWidth || gy >= this.gridHeight) return false;
+    return this.collisionGrid[gy]?.[gx] === 0 && !this.placementBlockedTiles.has(tileKey(gx, gy));
+  }
+
+  isBaseWalkable(gx: number, gy: number): boolean {
+    if (gx < 0 || gy < 0 || gx >= this.gridWidth || gy >= this.gridHeight) return false;
     return this.collisionGrid[gy]?.[gx] === 0;
+  }
+
+  setPlacementBlockedTiles(tiles: Array<{ gx: number; gy: number }>): void {
+    this.placementBlockedTiles = new Set(
+      tiles
+        .filter((tile) => tile.gx >= 0 && tile.gy >= 0 && tile.gx < this.gridWidth && tile.gy < this.gridHeight)
+        .map((tile) => tileKey(tile.gx, tile.gy)),
+    );
+    this.walkableComponentCache.clear();
+  }
+
+  addPlacementBlockedTiles(tiles: Array<{ gx: number; gy: number }>): void {
+    for (const tile of tiles) {
+      if (tile.gx < 0 || tile.gy < 0 || tile.gx >= this.gridWidth || tile.gy >= this.gridHeight) continue;
+      this.placementBlockedTiles.add(tileKey(tile.gx, tile.gy));
+    }
+    this.walkableComponentCache.clear();
+  }
+
+  getPathfindingGrid(): number[][] {
+    return this.collisionGrid.map((row, gy) =>
+      row.map((value, gx) => (value !== 0 || this.placementBlockedTiles.has(tileKey(gx, gy)) ? 1 : 0)),
+    );
   }
 
   hasWalkableLine(

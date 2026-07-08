@@ -15,6 +15,7 @@ export class CameraController {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<string, Phaser.Input.Keyboard.Key>;
   private isDragging = false;
+  private keyboardPanEnabled = true;
 
   constructor(
     scene: Phaser.Scene,
@@ -110,7 +111,7 @@ export class CameraController {
   }
 
   private handleKeyboardPan(cam: Phaser.Cameras.Scene2D.Camera) {
-    if (!this.cursors) return;
+    if (!this.cursors || !this.keyboardPanEnabled) return;
     const speed = KEY_PAN_SPEED / cam.zoom;
     if (this.cursors.left.isDown || this.wasd.A?.isDown) cam.scrollX -= speed;
     if (this.cursors.right.isDown || this.wasd.D?.isDown) cam.scrollX += speed;
@@ -225,8 +226,20 @@ export class CameraController {
     this.scene.cameras.main.stopFollow();
   }
 
+  setKeyboardPanEnabled(enabled: boolean): void {
+    this.keyboardPanEnabled = enabled;
+  }
+
   panTo(x: number, y: number, duration = 500): void {
     this.scene.cameras.main.pan(x, y, duration);
+  }
+
+  updateMapBounds(width: number, height: number): void {
+    this.mapWidth = width;
+    this.mapHeight = height;
+    const cam = this.scene.cameras.main;
+    this.applyViewportConstraints(cam);
+    this.emitState();
   }
 
   destroy() {

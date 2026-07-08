@@ -305,6 +305,19 @@ export class CharacterSprite extends Phaser.GameObjects.Container {
     }
   }
 
+  /** 外部控制行走方向和动画（用于键盘移动） */
+  setWalkDirection(dx: number, dy: number): void {
+    if (!this.hasSprite) return;
+    if (dx === 0 && dy === 0) {
+      this.setIdleFrame(this.facing);
+      return;
+    }
+    const direction: FacingDirection =
+      Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? "left" : "right") : (dy < 0 ? "up" : "down");
+    this.facing = direction;
+    this.playWalkAnim(direction);
+  }
+
   private playWalkAnim(direction: FacingDirection): void {
     if (!this.bodySprite) return;
     const prefix = `${this.characterId}_`;
@@ -418,6 +431,14 @@ export class CharacterSprite extends Phaser.GameObjects.Container {
       return this.bodySprite?.displayHeight ?? this.displayMetrics.spriteHeight;
     }
     return (this.bodyCircle?.radius ?? this.displayMetrics.circleRadius) * 2;
+  }
+
+  /** 更新显示名（用于远程玩家改名后同步名字标签） */
+  setDisplayName(name: string): void {
+    this.characterName = name;
+    if (this.nameEl) {
+      this.nameEl.textContent = name;
+    }
   }
 
   showBubble(
@@ -771,6 +792,64 @@ export class CharacterSprite extends Phaser.GameObjects.Container {
     this.bodyContainer.setY(0);
     this.bodyContainer.setScale(1, 1);
     this.idleTween?.resume();
+  }
+
+  /**
+   * Try to switch from circle fallback to sprite body if the texture
+   * has become available (e.g. loaded asynchronously after construction).
+   * Returns true if the switch happened.
+   */
+  tryUpgradeToSprite(): boolean {
+    if (this.hasSprite) return false;
+    if (!this.scene.textures.exists(this.characterId)) return false;
+
+    console.log(`[CharacterSprite] Upgrading ${this.characterId} from circle to sprite`);
+    this.hasSprite = true;
+
+    // Recreate shadow with sprite dimensions
+    this.shadow.width = this.displayMetrics.shadowWidth;
+    this.shadow.height = this.displayMetrics.shadowHeight;
+    this.shadow.y = this.displayMetrics.shadowOffsetY;
+
+    // Destroy old circle body
+    if (this.idleTween) {
+      this.idleTween.stop();
+      this.idleTween = null;
+    }
+    if (this.walkTween) {
+      this.walkTween.stop();
+      this.walkTween = null;
+    }
+    this.bodyCircle?.destroy();
+    this.bodyCircle = null;
+
+    // Create sprite body
+    this.createSpriteBody();
+
+    // Re-add bodyContainer to the container at the correct position
+    // (it's already in this.add([...]) from createVisuals, we just
+    // need to reorder to keep shadow under the body)
+    this.bringToTop(this.bodyContainer);
+
+    // Update hit area
+    const hitW = this.displayMetrics.hitWidth;
+    const hitH = this.displayMetrics.hitHeight;
+    const hitTopY = this.displayMetrics.hitTopY;
+    this.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(-hitW / 2, hitTopY, hitW, hitH),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true,
+    });
+
+    // Update bubble anchor
+    this.bubbleContainer.setY(this.displayMetrics.bubbleOffsetY);
+    this.osBubbleContainer.setY(this.displayMetrics.bubbleOffsetY);
+    this.updateOsBubblePosition();
+
+    // Update DOM label position
+    this.updateDomLabelPosition();
+
+    return true;
   }
 
   enableClick(callback: (charId: string) => void): void {

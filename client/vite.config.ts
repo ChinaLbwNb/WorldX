@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
 import path from "node:path";
 
+const devServerOrigin = process.env.VITE_DEV_SERVER_ORIGIN || "http://localhost:3100";
+const devWsOrigin = devServerOrigin.replace(/^http/, "ws");
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -9,11 +12,13 @@ export default defineConfig({
   },
   server: {
     port: 3200,
+    host: true,
+    allowedHosts: [".ngrok-free.dev"],
     proxy: {
-      "/api": "http://localhost:3100",
-      "/assets": "http://localhost:3100",
+      "/api": devServerOrigin,
+      "/assets": devServerOrigin,
       "/ws": {
-        target: "ws://localhost:3100",
+        target: devWsOrigin,
         ws: true,
       },
     },

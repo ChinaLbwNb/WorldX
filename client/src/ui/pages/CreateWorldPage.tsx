@@ -19,6 +19,7 @@ import {
 import { CreateWorldBackground } from "./CreateWorldBackground";
 import { LanguageToggle } from "../components/LanguageToggle";
 import { sortLibraryWorldsForLocale } from "../utils/library-world-sort";
+import { networkManager } from "../../systems/NetworkManager";
 
 type Mode = "input" | "running" | "done" | "error";
 
@@ -141,7 +142,16 @@ export function CreateWorldPage({
     let cancelled = false;
     (async () => {
       try {
-        await apiClient.switchWorld(snapshot.worldId!);
+        const selectedId = networkManager.getSelectedUserCharacterId();
+        const userCharacters = await apiClient.getUserCharacters();
+        const character =
+          userCharacters.characters.find((item) => item.id === selectedId)
+          ?? userCharacters.characters[0];
+        if (!character) {
+          throw new Error("当前账号没有可用角色，无法进入新世界");
+        }
+        const entered = await apiClient.enterWorldWithUserCharacter(character.id, snapshot.worldId!);
+        networkManager.setSelectedUserCharacter(entered.character.id, entered.character.name);
         if (cancelled) return;
         // Tiny delay to let the success animation register.
         setTimeout(() => {

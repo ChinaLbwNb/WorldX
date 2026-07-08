@@ -104,6 +104,8 @@ export function buildActionMenu(
   if (!isAnchored) {
     const charLines: string[] = [];
     for (const c of perception.charactersHere) {
+      // Skip player characters — they are managed by PlayerManager, not CharacterManager
+      if (c.id.startsWith("player_")) continue;
       const otherProfile = characterManager.getProfile(c.id);
       const otherState = characterManager.getState(c.id);
       if (!isLegalDirectTalkTarget(state.location, otherState.location)) continue;
@@ -144,6 +146,8 @@ export function buildActionMenu(
   if (canInitiateDialogue && isAnchored) {
     const charLines: string[] = [];
     for (const c of perception.charactersHere) {
+      // Skip player characters — they are managed by PlayerManager, not CharacterManager
+      if (c.id.startsWith("player_")) continue;
       const otherProfile = characterManager.getProfile(c.id);
       const otherState = characterManager.getState(c.id);
       if (!isLegalDirectTalkTarget(state.location, otherState.location)) continue;

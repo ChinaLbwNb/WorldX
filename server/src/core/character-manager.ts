@@ -107,6 +107,74 @@ export class CharacterManager {
     return Array.from(this.profiles.values());
   }
 
+  /**
+   * 动态添加新角色到运行时。
+   * 会同时注册 profile 并初始化 state。
+   */
+  addCharacter(profile: CharacterProfile, initialState?: Partial<CharacterState>): CharacterProfile {
+    if (this.profiles.has(profile.id)) {
+      throw new Error(`Character already exists: ${profile.id}`);
+    }
+
+    this.profiles.set(profile.id, profile);
+
+    // 构建初始 state
+    const occupiedPointIds = new Set<string>();
+    for (const s of charStateStore.getAllCharacterStates()) {
+      if (s.mainAreaPointId) occupiedPointIds.add(s.mainAreaPointId);
+    }
+
+    const spawnSeedSalt = `dyn:${Date.now().toString(36)}`;
+    const baseState = buildInitialCharacterState(
+      profile,
+      this.worldManager,
+      occupiedPointIds,
+      spawnSeedSalt,
+    );
+
+    const finalState: CharacterState = {
+      ...baseState,
+      ...(initialState ?? {}),
+    };
+
+    charStateStore.initCharacterState(finalState);
+
+    // 初始化记忆（如果有初始记忆）
+    for (const initMem of profile.initialMemories) {
+      this.memoryManager.addMemory({
+        characterId: profile.id,
+        type: initMem.type,
+        content: initMem.content,
+        gameTime: { day: 1, tick: 0 },
+        importance: initMem.importance,
+        emotionalValence: initMem.emotionalValence,
+        emotionalIntensity: initMem.emotionalIntensity,
+        relatedCharacters: initMem.relatedCharacters,
+        relatedLocation: initMem.relatedLocation,
+        relatedObjects: initMem.relatedObjects,
+        tags: initMem.tags,
+      });
+    }
+
+    if (profile.backstory) {
+      this.memoryManager.addMemory({
+        characterId: profile.id,
+        type: "experience",
+        content: profile.backstory,
+        gameTime: { day: 1, tick: 0 },
+        importance: 8,
+        emotionalValence: 0,
+        emotionalIntensity: 3,
+        relatedCharacters: [],
+        relatedLocation: profile.startPosition,
+        relatedObjects: [],
+        tags: ["backstory"],
+      });
+    }
+
+    return profile;
+  }
+
   /** Editable subset of CharacterProfile fields. */
   static readonly EDITABLE_FIELDS = [
     "coreMotivation", "coreValues", "speakingStyle",
@@ -255,8 +323,11 @@ function buildInitialCharacterState(
   spawnSeedSalt: string,
 ): CharacterState {
   const spawnSeed = `${profile.id}:${spawnSeedSalt}`;
+  const startLocation = worldManager.getLocation(profile.startPosition)
+    ? profile.startPosition
+    : "main_area";
   let mainAreaPointId: string | null = null;
-  if (profile.startPosition === "main_area") {
+  if (startLocation === "main_area") {
     if (profile.anchor?.type === "element") {
       const elementPointId = `element_${profile.anchor.targetId}`;
       const point = worldManager.getMainAreaPoint(elementPointId);
@@ -272,7 +343,7 @@ function buildInitialCharacterState(
 
   return {
     characterId: profile.id,
-    location: profile.startPosition,
+    location: startLocation,
     mainAreaPointId,
     currentAction: null,
     currentActionTarget: null,

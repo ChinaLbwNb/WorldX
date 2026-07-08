@@ -7,6 +7,8 @@ export const SPRITE_ROWS = 5;
 export const SPRITE_WALK_FRAME_RATE = 8;
 
 const CHARACTER_HEIGHT_SUM_RATIO = 0.04;
+const CHARACTER_MIN_REFERENCE_SPAN = 1600;
+const CHARACTER_MAX_REFERENCE_SPAN = 2144;
 
 export interface CharacterDisplayMetrics {
   spriteWidth: number;
@@ -41,7 +43,15 @@ export function createCharacterDisplayMetrics(
   mapWidth: number,
   mapHeight: number,
 ): CharacterDisplayMetrics {
-  const spriteHeight = (mapWidth + mapHeight) * CHARACTER_HEIGHT_SUM_RATIO;
+  // Character scale must be tied to local map art density, not to the total
+  // expanded world bounds. Sparse chunk expansion can make mapWidth/mapHeight
+  // grow forever; using the full bounds would make actors larger every time the
+  // world expands. Cap the reference span at the original chunk-sized baseline.
+  const referenceSpan = Math.min(
+    CHARACTER_MAX_REFERENCE_SPAN,
+    Math.max(CHARACTER_MIN_REFERENCE_SPAN, mapWidth + mapHeight),
+  );
+  const spriteHeight = referenceSpan * CHARACTER_HEIGHT_SUM_RATIO;
   const spriteWidth = spriteHeight * (SPRITE_FRAME_WIDTH / SPRITE_FRAME_HEIGHT);
 
   return {

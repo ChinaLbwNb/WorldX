@@ -1,6 +1,7 @@
 import type { Perception, GameTime } from "../types/index.js";
 import type { WorldManager } from "../core/world-manager.js";
 import type { CharacterManager } from "../core/character-manager.js";
+import type { PlayerManager } from "../core/player-manager.js";
 import { getEmotionLabel } from "../core/emotion-manager.js";
 import * as eventStore from "../store/event-store.js";
 
@@ -9,6 +10,7 @@ export function buildPerception(
   worldManager: WorldManager,
   characterManager: CharacterManager,
   gameTime: GameTime,
+  playerManager?: PlayerManager,
 ): Perception {
   const state = characterManager.getState(charId);
   const location = worldManager.getLocation(state.location);
@@ -68,6 +70,28 @@ export function buildPerception(
         zone,
       };
     });
+
+  // 如果玩家处于化身模式且在同一位置，NPC 能感知到
+  if (playerManager) {
+    const onlineAvatars = playerManager.getOnlineAvatarPlayers();
+    for (const playerState of onlineAvatars) {
+      if (playerState.location !== state.location) continue;
+      const playerZone =
+        hasZones && playerState.location === "main_area"
+          ? worldManager.getMainAreaPointZone(playerState.mainAreaPointId)
+          : undefined;
+      charactersHere.push({
+        id: playerState.id,
+        name: playerState.name,
+        currentAction: playerState.currentAction,
+        appearanceHint: "一个陌生的旅行者，看起来不属于这里",
+        locationId: playerState.location,
+        locationName: location.name,
+        emotionLabel: undefined,
+        zone: playerZone,
+      });
+    }
+  }
 
   const recentEvents = eventStore.queryEvents({
     type: "event_triggered",

@@ -14,9 +14,14 @@ export class PathfindingManager {
   constructor(mapManager: MapManager) {
     this.mapManager = mapManager;
     this.easystar = new EasyStar.js();
-    this.easystar.setGrid(mapManager.collisionGrid);
+    this.rebuildGrid();
+  }
+
+  rebuildGrid(): void {
+    this.easystar = new EasyStar.js();
+    this.easystar.setGrid(this.mapManager.getPathfindingGrid());
     this.easystar.setAcceptableTiles([0]);
-    this.applyEdgeCosts(mapManager);
+    this.applyEdgeCosts(this.mapManager);
   }
 
   private applyEdgeCosts(map: MapManager): void {

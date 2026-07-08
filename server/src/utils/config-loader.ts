@@ -177,6 +177,7 @@ function normalizeCharacterProfile(raw: any): CharacterProfile | null {
     tags: Array.isArray(raw.tags) ? raw.tags : [],
     initialMemories: normalizeInitialMemories(raw.initialMemories, startLocation),
     anchor: normalizeAnchor(raw.anchor),
+    isStatic: raw.isStatic === true,
     iconicCues: normalizeIconicCues(raw.iconicCues),
     canonicalRefs: normalizeCanonicalRefs(raw.canonicalRefs),
   };
