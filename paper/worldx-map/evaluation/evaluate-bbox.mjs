@@ -38,6 +38,8 @@ async function main() {
     meanNCELocated: round(result.meanNCELocated),
     recallAt03: round(result.recallAt03),
     recallAt05: round(result.recallAt05),
+    absentFalsePositiveRate: round(result.absentFalsePositiveRate),
+    presenceAccuracy: round(result.presenceAccuracy),
     rows: result.rows.map((row) => ({
       ...row,
       iou: round(row.iou),
