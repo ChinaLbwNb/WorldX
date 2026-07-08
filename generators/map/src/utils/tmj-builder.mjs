@@ -56,7 +56,11 @@ export function buildTMJ({
     visible: true,
     properties: [
       { name: "objectId", type: "string", value: obj.id },
-      { name: "interactions", type: "string", value: JSON.stringify(obj.suggestedInteractions || []) },
+      {
+        name: "interactions",
+        type: "string",
+        value: JSON.stringify(obj.interactions || obj.suggestedInteractions || []),
+      },
     ],
   }));
 
