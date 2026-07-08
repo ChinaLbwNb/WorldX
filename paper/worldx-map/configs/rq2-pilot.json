@@ -1,6 +1,8 @@
 {
-  "version": "1.0",
+  "version": "1.1",
+  "supersedes": "1.0",
   "frozen": true,
+  "freezeNote": "v1.1 was frozen before any pilot model run; it adds matched batching/context and explicit absent-target scoring discovered during pre-run PR review.",
   "researchQuestion": "Does generative overlay grounding improve spatial localization accuracy over direct coordinate prediction?",
   "methods": ["DirectCoord", "GridCoord", "GOG", "GOG-V"],
   "sample": {
@@ -8,6 +10,14 @@
     "maps": 10,
     "targetPolicy": "Evaluate every planned region and interactive element. Do not remove targets that are absent in the rendered map.",
     "expectedTargetsPerMap": "2-8"
+  },
+  "fairnessControls": {
+    "sameImagePerMap": true,
+    "sameTargetListPerMap": true,
+    "sharedMapDescription": true,
+    "typeSeparatedBatches": true,
+    "maxTargetsPerBatch": 4,
+    "note": "DirectCoord and GridCoord match GOG's region/element separation and maximum batch size to reduce batching confounds."
   },
   "primaryMetrics": [
     "meanIoUAll",
@@ -18,24 +28,27 @@
   "secondaryMetrics": [
     "meanIoULocated",
     "meanNCELocated",
-    "recallAt05"
+    "recallAt05",
+    "absentFalsePositiveRate",
+    "presenceAccuracy"
   ],
   "metricPolicy": {
     "missingPredictionIoU": 0,
     "missingPredictionNCE": 1,
     "presentGoldOnlyForLocalizationMetrics": true,
-    "absentTargetsRetainedForSeparatePresenceAnalysis": true
+    "absentTargetsRetainedForSeparatePresenceAnalysis": true,
+    "absentTargetPredictedLocatedCountsAsFalsePositive": true
   },
   "goNoGo": {
-    "go": "GOG improves at least two primary metrics over DirectCoord with the same direction on a majority of maps.",
-    "partialGo": "GOG does not improve mean IoU but materially lowers missing rate or NCE; reframe the claim around robustness rather than precision.",
+    "go": "GOG improves at least two primary metrics over DirectCoord with the same direction on a majority of maps, without a materially worse absentFalsePositiveRate.",
+    "partialGo": "GOG does not improve mean IoU but materially lowers missing rate or NCE; reframe the claim around robustness rather than precision, subject to absent-target false-positive analysis.",
     "noGo": "DirectCoord dominates GOG on meanIoUAll, meanNCEAll, recallAt03, and missingRate; do not retain GOG as the main contribution without a new mechanism."
   },
   "auditRules": [
     "Do not edit pilot prompts after the first generation run.",
     "Do not tune extraction thresholds on the ten pilot maps after viewing aggregate test metrics.",
-    "Record model identifiers, timestamps, raw responses, and source artifacts.",
+    "Record model identifiers, timestamps, raw responses, call counts, and source artifacts.",
     "A verifier API failure is verifier_unavailable, never verified_pass.",
-    "Any protocol change requires a new versioned config."
+    "Any protocol change after the first pilot model run requires a new versioned config."
   ]
 }
