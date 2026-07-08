@@ -31,13 +31,18 @@ function toBBox(item) {
 }
 
 function inferVerificationStatus({ logText, metadata, stepKey }) {
+  const failurePhrase = "(?:confirmation call failed|confirmation unavailable)";
   const failurePattern = stepKey === "step3"
-    ? /\[Step 3\].*confirmation call failed/i
-    : /\[Step 3\.2\].*confirmation call failed/i;
+    ? new RegExp(`\\[Step 3\\].*${failurePhrase}`, "i")
+    : new RegExp(`\\[Step 3\\.2\\].*${failurePhrase}`, "i");
   if (failurePattern.test(logText)) return "verifier_unavailable";
 
   const step = metadata?.steps?.[stepKey];
   if (!step) return "unknown";
+  if (step.verificationStatus === "verifier_unavailable" || step.verifierUnavailable === true) {
+    return "verifier_unavailable";
+  }
+  if (step.verificationStatus) return step.verificationStatus;
   if (step.reviewPassed === true) return "verified_pass";
   if (step.reviewPassed === false) return "verified_fail";
   return "unknown";
@@ -96,7 +101,7 @@ async function main() {
       regions: regionStatus,
       elements: elementStatus,
       auditLogProvided: Boolean(args.log),
-      note: "verifier_unavailable overrides reviewPassed when the log records a confirmation call failure; this prevents fail-open events from being counted as verified passes in paper analysis."
+      note: "verifier_unavailable overrides reviewPassed when logs or metadata record a confirmation outage; unavailable verification is never counted as a pass."
     },
     targets,
   };
