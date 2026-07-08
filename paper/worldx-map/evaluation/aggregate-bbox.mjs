@@ -24,9 +24,12 @@ function round(value, digits = 6) {
 
 function summarize(method, files) {
   const rows = files.flatMap((file) => file.rows || []);
+  const absenceRows = files.flatMap((file) => file.absenceRows || []);
+  const presenceRows = files.flatMap((file) => file.presenceRows || []);
   const locatedRows = rows.filter((row) => row.located);
   const targetCount = rows.length;
   const locatedCount = locatedRows.length;
+  const absentFalsePositiveCount = absenceRows.filter((row) => row.falsePositive).length;
   return {
     method,
     maps: files.length,
@@ -40,6 +43,12 @@ function summarize(method, files) {
     meanNCELocated: round(mean(locatedRows.map((row) => Number(row.nce)))),
     recallAt03: round(mean(rows.map((row) => Number(row.recallAt03)))),
     recallAt05: round(mean(rows.map((row) => Number(row.recallAt05)))),
+    absentTargetCount: absenceRows.length,
+    absentFalsePositiveCount,
+    absentFalsePositiveRate: round(
+      absenceRows.length ? absentFalsePositiveCount / absenceRows.length : null,
+    ),
+    presenceAccuracy: round(mean(presenceRows.map((row) => Number(row.correct)))),
   };
 }
 
