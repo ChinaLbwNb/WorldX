@@ -20,7 +20,8 @@
     "paper:rq2:gog": "node paper/worldx-map/baselines/gog-first-pass.mjs",
     "paper:rq2:gog-v": "node paper/worldx-map/baselines/gog-verified.mjs",
     "paper:rq2:eval": "node paper/worldx-map/evaluation/evaluate-bbox.mjs",
-    "paper:rq2:aggregate": "node paper/worldx-map/evaluation/aggregate-bbox.mjs"
+    "paper:rq2:aggregate": "node paper/worldx-map/evaluation/aggregate-bbox.mjs",
+    "paper:rq2:test": "node --test paper/worldx-map/tests/*.test.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7"
