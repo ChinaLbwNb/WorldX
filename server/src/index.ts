@@ -427,8 +427,16 @@ async function main() {
     next();
   };
 
+  const requireMultiplayerMode: express.RequestHandler = (_req, res, next) => {
+    if (!isMultiplayerMode) {
+      res.status(404).json({ error: "API route not found in classic mode" });
+      return;
+    }
+    next();
+  };
+
   app.use("/api/world", worldRoutes);
-  app.use("/api/tasks", taskRoutes);
+  app.use("/api/tasks", requireMultiplayerMode, taskRoutes);
   app.use("/api/characters", requireWorld, characterRoutes);
   app.use("/api/events", requireWorld, eventsRoutes);
   app.use("/api/content", requireWorld, createPublicContentRouter());
@@ -436,12 +444,12 @@ async function main() {
   app.use("/api/god", requireWorld, godRoutes);
   app.use("/api/sandbox/chat", requireWorld, sandboxChatRoutes);
   app.use("/api/timelines", timelineRoutes);
-  app.use("/api/users", requireWorld, userRoutes);
-  app.use("/api/user-characters", requireWorld, userCharacterRoutes);
-  app.use("/api/user-character-runtime", requireWorld, userCharacterRuntimeRoutes);
-  app.use("/api/build", requireWorld, buildRoutes);
-  app.use("/api/items", requireWorld, itemRoutes);
-  app.use("/api/actor-interactions", requireWorld, actorInteractionRoutes);
+  app.use("/api/users", requireMultiplayerMode, requireWorld, userRoutes);
+  app.use("/api/user-characters", requireMultiplayerMode, requireWorld, userCharacterRoutes);
+  app.use("/api/user-character-runtime", requireMultiplayerMode, requireWorld, userCharacterRuntimeRoutes);
+  app.use("/api/build", requireMultiplayerMode, requireWorld, buildRoutes);
+  app.use("/api/items", requireMultiplayerMode, requireWorld, itemRoutes);
+  app.use("/api/actor-interactions", requireMultiplayerMode, requireWorld, actorInteractionRoutes);
   app.use("/api", (req, res) => {
     res.status(404).json({ error: `API route not found: ${req.method} ${req.path}` });
   });

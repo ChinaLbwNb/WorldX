@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { CSSProperties } from "react";
 import { apiClient } from "../services/api-client";
 import { networkManager } from "../../systems/NetworkManager";
+import { isMultiplayerMode } from "../../config/app-mode";
 import type { SimulationEvent, CharacterInfo, LocationInfo } from "../../types/api";
 import { centeredWindowStyle, useFloatingWindowZIndex } from "../components/panel-styles";
 import {
@@ -38,7 +39,7 @@ export function Timeline({
 
   useEffect(() => {
     if (!open) return;
-    const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+    const userCharacterId = isMultiplayerMode ? networkManager.getSelectedUserCharacterId() || undefined : undefined;
     apiClient.getEvents({ limit: 200 }).then(setEvents).catch(console.warn);
     apiClient.getCharacters(userCharacterId).then(setCharacters).catch(console.warn);
     apiClient.getLocations(userCharacterId).then(setLocations).catch(console.warn);

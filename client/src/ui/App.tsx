@@ -1125,7 +1125,7 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
             ticksPerScene={ticksPerScene}
             onDismiss={(id) => setDismissedIds((prev) => new Set(prev).add(id))}
           />
-          <MapControls eventBus={eventBus} />
+          {isMultiplayerMode && <MapControls eventBus={eventBus} />}
           <SceneTransition
             day={gameTime.day + (transitionPhase === "ending" ? 1 : 0)}
             phase={transitionPhase}

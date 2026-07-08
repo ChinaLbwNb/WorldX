@@ -6,6 +6,7 @@ import { CharacterMovement } from "../systems/CharacterMovement";
 import { PlaybackController } from "../systems/PlaybackController";
 import { CameraController } from "../systems/CameraController";
 import { CharacterSprite } from "../objects/CharacterSprite";
+import { isMultiplayerMode } from "../config/app-mode";
 import { getCharacterColor, actionToEmoji, createCharacterDisplayMetrics, SPRITE_FRAME_WIDTH, SPRITE_FRAME_HEIGHT } from "../config/game-config";
 import { UserCharacterController } from "../systems/UserCharacterController";
 import { networkManager } from "../systems/NetworkManager";
@@ -76,6 +77,11 @@ const ITEM_PLACEMENT_ROTATION_STEP_DEG = 15;
 // Frontend-only dialogue playback tuning. Search these names to adjust pacing.
 const FRONTEND_DIALOGUE_BUBBLE_MS = 5000;
 const FRONTEND_DIALOGUE_INNER_MONOLOGUE_TAIL_MS = 1500;
+
+function getScopedUserCharacterId(): string | undefined {
+  if (!isMultiplayerMode) return undefined;
+  return networkManager.getSelectedUserCharacterId() || networkManager.getPlayerId() || undefined;
+}
 
 export class WorldScene extends Phaser.Scene {
   private mapManager!: MapManager;
@@ -252,15 +258,19 @@ export class WorldScene extends Phaser.Scene {
       this.mapPixelHeight,
     );
 
-    this.setupItemPlacementMode();
-    this.setupMapItemRealtimeEvents();
-    this.setupTransferRequestOverlay();
+    if (isMultiplayerMode) {
+      this.setupItemPlacementMode();
+      this.setupMapItemRealtimeEvents();
+      this.setupTransferRequestOverlay();
+    }
 
     // 先注册多人事件处理器，再连接 WebSocket（避免丢消息）
-    this.setupMultiplayerEvents();
+    if (isMultiplayerMode) {
+      this.setupMultiplayerEvents();
+    }
     // 已选用户角色足以复用账号角色身份；昵称仅作为旧入口兼容。
     // 没有角色也没有昵称时仍交给 JoinGate，避免创建匿名旅行者。
-    if (networkManager.getSelectedUserCharacterId() || networkManager.getStoredName()) {
+    if (isMultiplayerMode && (networkManager.getSelectedUserCharacterId() || networkManager.getStoredName())) {
       networkManager.connect();
     }
 
@@ -486,7 +496,7 @@ export class WorldScene extends Phaser.Scene {
 
   private async initAsync() {
     try {
-      const worldInfo = await apiClient.getWorldInfo(networkManager.getSelectedUserCharacterId() || undefined);
+      const worldInfo = await apiClient.getWorldInfo(getScopedUserCharacterId());
       this.mapManager.setMainAreaPoints(worldInfo.mainAreaPoints || []);
       const pointCenter = this.getMainAreaPointsCenter();
       if (pointCenter) {
@@ -495,7 +505,9 @@ export class WorldScene extends Phaser.Scene {
       if (this.regionBoundsOverlay || this.mainAreaPointsOverlay || this.interactiveObjectsOverlay) {
         this.refreshDebugOverlays();
       }
-      await this.reloadMapItemPlacements();
+      if (isMultiplayerMode) {
+        await this.reloadMapItemPlacements();
+      }
     } catch (e) {
       console.warn("[WorldScene] Failed to load world navigation:", e);
     }
@@ -508,7 +520,9 @@ export class WorldScene extends Phaser.Scene {
 
     // 传递 NPC 精灵图 ID 给远程玩家管理器
     const npcIds = Array.from(this.characterSprites.keys());
-    this.remotePlayerManager.setBorrowedSpriteIds(npcIds);
+    if (isMultiplayerMode) {
+      this.remotePlayerManager.setBorrowedSpriteIds(npcIds);
+    }
 
     try {
       await this.playbackController.initialize();
@@ -516,16 +530,20 @@ export class WorldScene extends Phaser.Scene {
       console.warn("[WorldScene] Failed to initialize playback:", e);
     }
 
-    try {
-      await this.playerController.initialize();
-    } catch (e) {
-      console.warn("[WorldScene] Failed to initialize player:", e);
+    if (isMultiplayerMode) {
+      try {
+        await this.playerController.initialize();
+      } catch (e) {
+        console.warn("[WorldScene] Failed to initialize player:", e);
+      }
     }
 
-    try {
-      await this.initBuildSystem();
-    } catch (e) {
-      console.warn("[WorldScene] Failed to init build system:", e);
+    if (isMultiplayerMode) {
+      try {
+        await this.initBuildSystem();
+      } catch (e) {
+        console.warn("[WorldScene] Failed to init build system:", e);
+      }
     }
 
     console.log("[WorldScene] Async init complete, sprites:", this.characterSprites.size);
@@ -569,7 +587,7 @@ export class WorldScene extends Phaser.Scene {
    */
   private async initBuildSystem(): Promise<void> {
     try {
-      const userCharacterId = networkManager.getSelectedUserCharacterId() || networkManager.getPlayerId() || undefined;
+      const userCharacterId = getScopedUserCharacterId();
       const state = await apiClient.getBuildState(userCharacterId);
       this.buildState = state;
       this.resourceNodes.clear();
@@ -1127,6 +1145,7 @@ export class WorldScene extends Phaser.Scene {
 
   private async placeActiveItem(pixelX: number, pixelY: number): Promise<void> {
     if (!this.activeItemPlacement || this.itemPlacementBusy) return;
+    if (!isMultiplayerMode) return;
     const placement = this.activeItemPlacement;
     const tileSize = this.mapManager.tileSize;
     const tileX = Math.floor(pixelX / tileSize);
@@ -1137,7 +1156,7 @@ export class WorldScene extends Phaser.Scene {
       return;
     }
 
-    const userCharacterId = networkManager.getSelectedUserCharacterId() || networkManager.getPlayerId() || "";
+    const userCharacterId = getScopedUserCharacterId() || "";
     if (!userCharacterId) {
       this.flashPlacementMessage("请先选择角色", false);
       return;
@@ -1167,8 +1186,9 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private async reloadMapItemPlacements(): Promise<void> {
+    if (!isMultiplayerMode) return;
     try {
-      const userCharacterId = networkManager.getSelectedUserCharacterId() || networkManager.getPlayerId() || undefined;
+      const userCharacterId = getScopedUserCharacterId();
       const response = await apiClient.getMapItemPlacements({ userCharacterId });
       this.itemPlacementLayer?.removeAll(true);
       this.applyPlacementCollision(response.placements, "replace");
@@ -1293,7 +1313,8 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private async pickupMapItem(placementId: string): Promise<void> {
-    const userCharacterId = networkManager.getSelectedUserCharacterId() || networkManager.getPlayerId() || "";
+    if (!isMultiplayerMode) return;
+    const userCharacterId = getScopedUserCharacterId() || "";
     if (!userCharacterId) {
       this.flashPlacementMessage("请先选择角色", false);
       return;
@@ -1525,8 +1546,9 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private async collectResource(objectId: string): Promise<void> {
+    if (!isMultiplayerMode) return;
     try {
-      const userCharacterId = networkManager.getSelectedUserCharacterId() || networkManager.getPlayerId() || undefined;
+      const userCharacterId = getScopedUserCharacterId();
       const result = await apiClient.collectResource(objectId, userCharacterId);
       if (result.success) {
         const node = this.resourceNodes.get(objectId);
@@ -2466,8 +2488,10 @@ export class WorldScene extends Phaser.Scene {
     this.cameraController?.update();
     this.pathfinder?.update();
     this.playbackController?.update(delta);
-    this.playerController?.update(delta);
-    this.updateNearbyResource();
+    if (isMultiplayerMode) {
+      this.playerController?.update(delta);
+      this.updateNearbyResource();
+    }
     if (!this.isReplaying) {
       this.characterMovement?.updateAmbientMovement(performance.now());
     }
@@ -2476,11 +2500,13 @@ export class WorldScene extends Phaser.Scene {
       sprite.syncOverlayZoom(zoom);
     }
     // 本地用户角色也需要同步 DOM 标签位置
-    if (this.playerController?.playerSprite) {
+    if (isMultiplayerMode && this.playerController?.playerSprite) {
       this.playerController.playerSprite.syncOverlayZoom(zoom);
     }
     // 远程玩家 DOM 标签同步
-    this.remotePlayerManager?.syncZoom(zoom);
+    if (isMultiplayerMode) {
+      this.remotePlayerManager?.syncZoom(zoom);
+    }
     if (this.entityLayer) {
       this.entityLayer.list.sort((a, b) => {
         const ay = a instanceof CharacterSprite ? a.getSortFootY() : (a as Phaser.GameObjects.Sprite).y || 0;

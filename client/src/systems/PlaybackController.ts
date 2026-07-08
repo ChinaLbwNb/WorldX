@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { isMultiplayerMode } from "../config/app-mode";
 import { apiClient } from "../ui/services/api-client";
 import { networkManager } from "./NetworkManager";
 import type {
@@ -73,8 +74,13 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
     });
   }
 
+  private getScopedUserCharacterId(): string | undefined {
+    if (!isMultiplayerMode) return undefined;
+    return networkManager.getSelectedUserCharacterId() || undefined;
+  }
+
   async initialize(): Promise<void> {
-    const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+    const userCharacterId = this.getScopedUserCharacterId();
     const [worldTime, worldInfo] = await Promise.all([
       apiClient.getWorldTime(userCharacterId),
       apiClient.getWorldInfo(userCharacterId),
@@ -110,7 +116,7 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
     try {
       const { frames } = await apiClient.getTimelineEvents(
         timelineId,
-        networkManager.getSelectedUserCharacterId() || undefined,
+        this.getScopedUserCharacterId(),
       );
       if (frames.length === 0) {
         console.warn("[PlaybackController] No events to replay");
@@ -404,7 +410,7 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
 
   private async applyRemoteTick(payload: RemoteTickPayload): Promise<void> {
     if (this.mode !== "live") return;
-    if (payload?.sourceUserCharacterId && payload.sourceUserCharacterId === networkManager.getSelectedUserCharacterId()) {
+    if (isMultiplayerMode && payload?.sourceUserCharacterId && payload.sourceUserCharacterId === networkManager.getSelectedUserCharacterId()) {
       return;
     }
     if (!this.remoteTickMatchesLiveContext(payload)) return;
@@ -461,7 +467,7 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
   }
 
   private async refreshLiveContext(): Promise<void> {
-    const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+    const userCharacterId = this.getScopedUserCharacterId();
     const [worldTime, worldInfo] = await Promise.all([
       apiClient.getWorldTime(userCharacterId),
       apiClient.getWorldInfo(userCharacterId),
@@ -473,7 +479,7 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
   }
 
   private updateLiveContext(worldInfo: { currentWorldId?: string | null; currentTimelineId?: string | null }): void {
-    const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+    const userCharacterId = this.getScopedUserCharacterId();
     if (worldInfo.currentWorldId && worldInfo.currentTimelineId) {
       this.liveContext = {
         worldId: worldInfo.currentWorldId,

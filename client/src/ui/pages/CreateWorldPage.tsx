@@ -20,6 +20,7 @@ import { CreateWorldBackground } from "./CreateWorldBackground";
 import { LanguageToggle } from "../components/LanguageToggle";
 import { sortLibraryWorldsForLocale } from "../utils/library-world-sort";
 import { networkManager } from "../../systems/NetworkManager";
+import { isMultiplayerMode } from "../../config/app-mode";
 
 type Mode = "input" | "running" | "done" | "error";
 
@@ -142,6 +143,14 @@ export function CreateWorldPage({
     let cancelled = false;
     (async () => {
       try {
+        if (!isMultiplayerMode) {
+          await apiClient.switchWorld(snapshot.worldId!);
+          if (cancelled) return;
+          setTimeout(() => {
+            window.location.assign("/");
+          }, 1200);
+          return;
+        }
         const selectedId = networkManager.getSelectedUserCharacterId();
         const userCharacters = await apiClient.getUserCharacters();
         const character =

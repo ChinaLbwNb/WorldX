@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { isMultiplayerMode } from "../config/app-mode";
 import { SPRITE_FRAME_WIDTH, SPRITE_FRAME_HEIGHT } from "../config/game-config";
 import { withAssetAuth } from "../utils/asset-url";
 
@@ -122,7 +123,9 @@ export class BootScene extends Phaser.Scene {
   private async resolveRuntimeState() {
     const selectedCharacterId = this.getSelectedUserCharacterId();
     try {
-      const query = selectedCharacterId ? `?userCharacterId=${encodeURIComponent(selectedCharacterId)}` : "";
+      const query = isMultiplayerMode && selectedCharacterId
+        ? `?userCharacterId=${encodeURIComponent(selectedCharacterId)}`
+        : "";
       const res = await fetch(`/api/characters${query}`, {
         cache: "no-store",
         headers: this.getAuthHeaders(),
@@ -136,7 +139,9 @@ export class BootScene extends Phaser.Scene {
       this.characterIds = [];
     }
     try {
-      const query = selectedCharacterId ? `?userCharacterId=${encodeURIComponent(selectedCharacterId)}` : "";
+      const query = isMultiplayerMode && selectedCharacterId
+        ? `?userCharacterId=${encodeURIComponent(selectedCharacterId)}`
+        : "";
       const res = await fetch(`/api/world/maps${query}`, {
         cache: "no-store",
         headers: this.getAuthHeaders(),

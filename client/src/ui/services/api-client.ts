@@ -17,6 +17,7 @@ import type {
   BuildJobStatus,
   MapNodesState,
 } from "../../types/api";
+import { isMultiplayerMode } from "../../config/app-mode";
 
 const API_BASE = "/api";
 const LS_USER_ID = "worldx_user_id";
@@ -61,6 +62,7 @@ function fetchJSON<T>(path: string): Promise<T> {
 }
 
 function withUserCharacterQuery(path: string, userCharacterId?: string): string {
+  if (!isMultiplayerMode) return path;
   if (!userCharacterId) return path;
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}userCharacterId=${encodeURIComponent(userCharacterId)}`;

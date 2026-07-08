@@ -13,6 +13,7 @@ import * as worldStateStore from "../../store/world-state-store.js";
 import * as accountAssets from "../../store/account-asset-store.js";
 import * as authStore from "../../store/auth-store.js";
 import { onlinePlayers } from "../../services/online-players.js";
+import { isMultiplayerMode } from "../../utils/app-mode.js";
 import {
   GENERATED_WORLDS_DIR,
   LIBRARY_WORLDS_DIR,
@@ -29,6 +30,13 @@ import {
 import { recordTutorialTaskEvent } from "../../store/tutorial-task-store.js";
 
 const router = Router();
+
+function requireMultiplayerMode(res: Response): boolean {
+  if (isMultiplayerMode) return true;
+  res.status(404).json({ error: "API route not found in classic mode" });
+  return false;
+}
+
 const worldInvites = new Map<string, {
   id: string;
   inviterUserId: string;
@@ -270,6 +278,7 @@ router.get("/maps", (req, res) => {
 });
 
 router.get("/online", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   if (!appContext.hasWorld) {
     res.status(503).json({ error: "No world loaded" });
     return;
@@ -312,6 +321,7 @@ router.get("/online", (req, res) => {
 });
 
 router.post("/online/invite", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   pruneExpiredWorldInvites();
   const scoped = resolveUserCharacterWorldContext(req, res);
   if (!scoped) {
@@ -379,6 +389,7 @@ router.post("/online/invite", (req, res) => {
 });
 
 router.post("/online/invites/:inviteId/respond", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   pruneExpiredWorldInvites();
   const inviteId = String(req.params.inviteId);
   const accepted = req.body?.accepted === true;
@@ -442,6 +453,7 @@ router.post("/online/invites/:inviteId/respond", (req, res) => {
 });
 
 router.post("/online/kick", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   if (!appContext.hasWorld) {
     res.status(503).json({ error: "No world loaded" });
     return;
@@ -480,6 +492,7 @@ router.post("/online/kick", (req, res) => {
 });
 
 router.post("/map/enter", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   if (!appContext.hasWorld) {
     res.status(503).json({ error: "No world loaded" });
     return;
@@ -592,6 +605,7 @@ router.post("/map/enter", (req, res) => {
 });
 
 router.post("/enter", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   const worldId = typeof req.body?.worldId === "string" ? req.body.worldId : "";
   const userCharacterId = typeof req.body?.userCharacterId === "string" ? req.body.userCharacterId : "";
   const userId = getRequestUserId(req);
@@ -815,6 +829,7 @@ router.post("/select", (req, res) => {
 });
 
 router.patch("/worlds/:worldId", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   const worldId = String(req.params.worldId);
   const world = findWorldById(worldId);
   if (!world) {
@@ -846,6 +861,7 @@ router.patch("/worlds/:worldId", (req, res) => {
 });
 
 router.get("/worlds/:worldId/members", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   const worldId = String(req.params.worldId);
   const world = findWorldById(worldId);
   if (!world) {
@@ -861,6 +877,7 @@ router.get("/worlds/:worldId/members", (req, res) => {
 });
 
 router.post("/worlds/:worldId/members", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   const worldId = String(req.params.worldId);
   const targetUserId = typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
   const role = accountAssets.normalizeWorldMemberRole(req.body?.role);
@@ -887,6 +904,7 @@ router.post("/worlds/:worldId/members", (req, res) => {
 });
 
 router.delete("/worlds/:worldId/members/:userId", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   const worldId = String(req.params.worldId);
   const targetUserId = String(req.params.userId);
   const world = findWorldById(worldId);
@@ -908,6 +926,7 @@ router.delete("/worlds/:worldId/members/:userId", (req, res) => {
 });
 
 router.delete("/worlds/:worldId", (req, res) => {
+  if (!requireMultiplayerMode(res)) return;
   const worldId = String(req.params.worldId);
   if (!worldId || worldId.includes("..") || worldId.includes("/") || worldId.includes("\\")) {
     res.status(400).json({ error: "Invalid world id" });

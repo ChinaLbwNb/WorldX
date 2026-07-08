@@ -3,6 +3,7 @@ import type { CSSProperties, KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { apiClient } from "../services/api-client";
 import { networkManager } from "../../systems/NetworkManager";
+import { isMultiplayerMode } from "../../config/app-mode";
 import type { CharacterInfo } from "../../types/api";
 import { darkGlassPanelStyle, useFloatingWindowZIndex } from "../components/panel-styles";
 
@@ -75,7 +76,7 @@ export function SandboxChatPanel({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setErr(null);
     try {
-      const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+      const userCharacterId = isMultiplayerMode ? networkManager.getSelectedUserCharacterId() || undefined : undefined;
       const resp = await apiClient.sandboxChatStart({
         characterId: charId,
         userCharacterId,
