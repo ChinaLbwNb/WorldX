@@ -35,6 +35,7 @@ jobs:
           node --check paper/worldx-map/evaluation/bbox-metrics.mjs
           node --check paper/worldx-map/evaluation/evaluate-bbox.mjs
           node --check paper/worldx-map/evaluation/aggregate-bbox.mjs
+          node --check paper/worldx-map/evaluation/overlay-preservation.mjs
           node --check paper/worldx-map/scripts/generate-pilot.mjs
           node --check paper/worldx-map/scripts/build-target-spec.mjs
           node --check paper/worldx-map/scripts/run-pilot-methods.mjs
