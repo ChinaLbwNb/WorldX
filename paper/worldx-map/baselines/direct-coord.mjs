@@ -6,6 +6,7 @@ dotenv.config({ path: resolve(process.cwd(), ".env") });
 
 const { geminiProVision } = await import("../../../generators/map/src/models/gemini-pro.mjs");
 const { getImageSize } = await import("../../../generators/map/src/utils/image-utils.mjs");
+const { MAX_BATCH_SIZE, chunkArray } = await import("../../../generators/map/src/utils/overlay-extraction.mjs");
 
 function parseArgs(argv) {
   const args = {};
@@ -49,7 +50,7 @@ function normalizeBBox(raw, width, height) {
   return box;
 }
 
-function buildPrompt({ targets, width, height }) {
+function buildPrompt({ targets, width, height, mapDescription, targetType }) {
   const targetText = targets.map((target, index) => [
     `${index + 1}. id=${target.id}`,
     `   type=${target.type}`,
@@ -59,7 +60,23 @@ function buildPrompt({ targets, width, height }) {
     `   placementHint=${target.placementHint || ""}`,
   ].join("\n")).join("\n");
 
-  return `You are evaluating spatial grounding on a generated top-down game map.\n\nImage size: ${width} x ${height} pixels.\n\nLocate each requested target directly from the image and return pixel-space bounding boxes. Do not use normalized 0-1 coordinates. Do not invent a target that is not visibly present. A region box should cover the visible functional footprint; an element box should tightly cover the visible object.\n\nTargets:\n${targetText}\n\nReturn JSON only:\n{\n  "targets": [\n    {"id": "target_id", "status": "located", "bbox": {"x1": 0, "y1": 0, "x2": 100, "y2": 100}},\n    {"id": "missing_id", "status": "missing", "bbox": null}\n  ]\n}\n\nEvery requested id must appear exactly once.`;
+  return `You are evaluating spatial grounding on a generated top-down game map.\n\nMap description: ${mapDescription || "not provided"}\nImage size: ${width} x ${height} pixels.\nTarget group: ${targetType}.\n\nLocate each requested target directly from the image and return pixel-space bounding boxes. Do not use normalized 0-1 coordinates. Do not invent a target that is not visibly present. A region box should cover the visible functional footprint; an element box should tightly cover the visible object.\n\nTargets:\n${targetText}\n\nReturn JSON only:\n{\n  "targets": [\n    {"id": "target_id", "status": "located", "bbox": {"x1": 0, "y1": 0, "x2": 100, "y2": 100}},\n    {"id": "missing_id", "status": "missing", "bbox": null}\n  ]\n}\n\nEvery requested id must appear exactly once.`;
+}
+
+function buildBatches(targets) {
+  const orderedTypes = ["region", "element"];
+  const known = new Set(orderedTypes);
+  const batches = [];
+  for (const type of orderedTypes) {
+    for (const items of chunkArray(targets.filter((target) => target.type === type), MAX_BATCH_SIZE)) {
+      if (items.length) batches.push({ type, targets: items });
+    }
+  }
+  const other = targets.filter((target) => !known.has(target.type));
+  for (const items of chunkArray(other, MAX_BATCH_SIZE)) {
+    if (items.length) batches.push({ type: "other", targets: items });
+  }
+  return batches;
 }
 
 async function main() {
@@ -77,15 +94,34 @@ async function main() {
   if (targets.length === 0) throw new Error("Target spec contains no targets");
 
   const { width, height } = await getImageSize(imageBuffer);
-  const prompt = buildPrompt({ targets, width, height });
+  const batches = buildBatches(targets);
   const startedAt = new Date().toISOString();
-  const rawResponse = await geminiProVision(prompt, [imageBuffer], {
-    temperature: 0,
-    logStep: `paper-rq2-direct-${targetSpec.mapId || "unknown"}`,
-    requestTimeoutMs: Number(process.env.PAPER_VISION_TIMEOUT_MS || 180000),
-  });
-  const parsed = extractJson(rawResponse);
-  const byId = new Map((parsed.targets || []).map((item) => [String(item.id), item]));
+  const rawResponses = [];
+  const byId = new Map();
+
+  for (let index = 0; index < batches.length; index++) {
+    const batch = batches[index];
+    const prompt = buildPrompt({
+      targets: batch.targets,
+      width,
+      height,
+      mapDescription: targetSpec.mapDescription || "",
+      targetType: batch.type,
+    });
+    const rawResponse = await geminiProVision(prompt, [imageBuffer], {
+      temperature: 0,
+      logStep: `paper-rq2-direct-${targetSpec.mapId || "unknown"}-${batch.type}-${index + 1}`,
+      requestTimeoutMs: Number(process.env.PAPER_VISION_TIMEOUT_MS || 180000),
+    });
+    const parsed = extractJson(rawResponse);
+    for (const item of parsed.targets || []) byId.set(String(item.id), item);
+    rawResponses.push({
+      batchIndex: index + 1,
+      targetType: batch.type,
+      targetIds: batch.targets.map((target) => target.id),
+      rawResponse,
+    });
+  }
 
   const predictions = targets.map((target) => {
     const item = byId.get(String(target.id));
@@ -105,16 +141,20 @@ async function main() {
     image: args.image,
     imageWidth: width,
     imageHeight: height,
+    mapDescription: targetSpec.mapDescription || "",
     model: process.env.VISION_MODEL || "default",
+    batchSize: MAX_BATCH_SIZE,
+    batching: "type_separated",
+    callCount: rawResponses.length,
     startedAt,
     completedAt: new Date().toISOString(),
     targets: predictions,
-    rawResponse,
+    rawResponses,
   };
 
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify(output, null, 2));
-  console.log(`[DirectCoord] wrote ${predictions.length} predictions to ${outPath}`);
+  console.log(`[DirectCoord] wrote ${predictions.length} predictions from ${rawResponses.length} calls to ${outPath}`);
 }
 
 main().catch((error) => {
