@@ -29,6 +29,7 @@ import { networkManager } from "../systems/NetworkManager";
 import type { SimulationEvent, DialogueEventData, WorldTimeInfo, BuildState } from "../types/api";
 import { apiClient } from "./services/api-client";
 import type { GeneratedWorldSummary, WorldInfo } from "./services/api-client";
+import { isMultiplayerMode } from "../config/app-mode";
 
 interface WorldInvitePayload {
   id: string;
@@ -378,6 +379,11 @@ function AuthWorldCarousel() {
   );
 }
 
+function getScopedUserCharacterId(): string | undefined {
+  if (!isMultiplayerMode) return undefined;
+  return networkManager.getSelectedUserCharacterId() || undefined;
+}
+
 function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
   const { t } = useTranslation();
   const location = useLocation();
@@ -387,9 +393,12 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
   const isDevMode = new URLSearchParams(location.search).get("dev") === "1";
   const isCreateRoute = location.pathname === "/create";
   const [authStatus, setAuthStatus] = useState<"checking" | "authenticated" | "anonymous">(
-    () => networkManager.getAuthToken() ? "checking" : "anonymous",
+    () => {
+      if (!isMultiplayerMode) return "authenticated";
+      return networkManager.getAuthToken() ? "checking" : "anonymous";
+    },
   );
-  const isAuthenticated = authStatus === "authenticated";
+  const isAuthenticated = !isMultiplayerMode || authStatus === "authenticated";
   const [worldsList, setWorldsList] = useState<GeneratedWorldSummary[] | null>(null);
   const [hasUserWorlds, setHasUserWorlds] = useState(false);
   const [gameTime, setGameTime] = useState<WorldTimeInfo>({
@@ -442,6 +451,10 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
     (worldInfo?.sceneConfig.sceneType === "open" ? t("app.defaultStartTransitionOpen") : t("app.defaultStartTransitionClosed"));
 
   useEffect(() => {
+    if (!isMultiplayerMode) {
+      setAuthStatus("authenticated");
+      return;
+    }
     if (!networkManager.getAuthToken()) {
       setAuthStatus("anonymous");
       return;
@@ -557,7 +570,7 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
     }
     let cancelled = false;
     setWorldsList(null);
-    apiClient.getGeneratedWorlds(networkManager.getSelectedUserCharacterId() || undefined)
+    apiClient.getGeneratedWorlds(getScopedUserCharacterId())
       .then((response) => {
         if (cancelled) return;
         const all = [...response.worlds, ...(response.libraryWorlds ?? [])];
@@ -651,7 +664,7 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
     let cancelled = false;
     const refreshWorldContext = async () => {
       try {
-        const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+        const userCharacterId = getScopedUserCharacterId();
         const [info, time, build] = await Promise.all([
           apiClient.getWorldInfo(userCharacterId),
           apiClient.getWorldTime(userCharacterId),
@@ -747,19 +760,27 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
       setBuildState((prev) =>
         prev ? { ...prev, resources: payload.resources } : prev
       );
-      void apiClient.reportTutorialTaskEvent("collect_resource").catch(() => undefined);
+      if (isMultiplayerMode) {
+        void apiClient.reportTutorialTaskEvent("collect_resource").catch(() => undefined);
+      }
     };
     const onItemGenerated = (payload: { resources: number }) => {
       setBuildState((prev) =>
         prev ? { ...prev, resources: payload.resources } : prev
       );
-      void apiClient.reportTutorialTaskEvent("generate_item").catch(() => undefined);
+      if (isMultiplayerMode) {
+        void apiClient.reportTutorialTaskEvent("generate_item").catch(() => undefined);
+      }
     };
     const onMapItemPlaced = () => {
-      void apiClient.reportTutorialTaskEvent("place_item").catch(() => undefined);
+      if (isMultiplayerMode) {
+        void apiClient.reportTutorialTaskEvent("place_item").catch(() => undefined);
+      }
     };
     const onMapNodesChanged = () => {
-      void apiClient.reportTutorialTaskEvent("generate_map_node").catch(() => undefined);
+      if (isMultiplayerMode) {
+        void apiClient.reportTutorialTaskEvent("generate_map_node").catch(() => undefined);
+      }
     };
 
     eventBus.on("time_update", onTimeUpdate);
@@ -820,7 +841,7 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
 
     setIsResetting(true);
     try {
-      await apiClient.createNewTimeline(networkManager.getSelectedUserCharacterId() || undefined);
+      await apiClient.createNewTimeline(getScopedUserCharacterId());
       window.location.reload();
     } catch (error) {
       console.warn("[App] Failed to create new timeline:", error);
@@ -909,6 +930,7 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
 
   // Periodically refresh build state (every 2 seconds)
   useEffect(() => {
+    if (!isMultiplayerMode) return;
     if (!isAuthenticated) return;
     if (isCreateRoute || isOverlayRoute) return;
 
@@ -916,7 +938,7 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
 
     const refresh = async () => {
       try {
-        const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+        const userCharacterId = getScopedUserCharacterId();
         const state = await apiClient.getBuildState(userCharacterId);
         if (!cancelled) {
           setBuildState(state);
@@ -973,8 +995,8 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
       <GameRuntime />
       {backgroundRoot &&
         createPortal(<CreateWorldBackground intensity="calm" />, backgroundRoot)}
-      {!isOverlayRoute && <JoinGate eventBus={eventBus} />}
-      {worldInvite && (
+      {isMultiplayerMode && !isOverlayRoute && <JoinGate eventBus={eventBus} />}
+      {isMultiplayerMode && worldInvite && (
         <WorldInviteModal
           invite={worldInvite}
           busy={worldInviteBusy}
@@ -983,11 +1005,12 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
           onDecline={() => void respondToWorldInvite(false)}
         />
       )}
-      {!hideMainChrome && <PublicChatPanel eventBus={eventBus} />}
+      {isMultiplayerMode && !hideMainChrome && <PublicChatPanel eventBus={eventBus} />}
       <div style={{ width: "100%", height: "100%", pointerEvents: "none" }}>
         {!hideMainChrome && (
         <>
           <TopBar
+            multiplayerMode={isMultiplayerMode}
             worldInfo={worldInfo}
             gameTime={gameTime}
             isDevMode={isDevMode}
@@ -1008,19 +1031,19 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
             isReplaying={isReplaying}
             replayProgress={replayProgress}
             onHeightChange={setTopBarHeight}
-            resources={buildState?.resources ?? null}
-            onToggleBuildPanel={() => handleOpenBuildPanel("character")}
-            onToggleMapPanel={() => handleOpenBuildPanel("map")}
-            buildPanelOpen={buildPanelOpen}
+            resources={isMultiplayerMode ? buildState?.resources ?? null : null}
+            onToggleBuildPanel={isMultiplayerMode ? () => handleOpenBuildPanel("character") : undefined}
+            onToggleMapPanel={isMultiplayerMode ? () => handleOpenBuildPanel("map") : undefined}
+            buildPanelOpen={isMultiplayerMode ? buildPanelOpen : false}
             buildPanelMode={buildPanelMode}
-            onToggleInventoryPanel={handleToggleInventoryPanel}
-            inventoryPanelOpen={inventoryPanelOpen}
-            onToggleTradePanel={handleToggleTradePanel}
-            tradePanelOpen={tradePanelOpen}
-            onToggleUserCharactersPanel={handleToggleUserCharactersPanel}
-            userCharactersPanelOpen={userCharactersPanelOpen}
-            onToggleUserAccountPanel={handleToggleUserAccountPanel}
-            userAccountPanelOpen={userAccountPanelOpen}
+            onToggleInventoryPanel={isMultiplayerMode ? handleToggleInventoryPanel : undefined}
+            inventoryPanelOpen={isMultiplayerMode ? inventoryPanelOpen : false}
+            onToggleTradePanel={isMultiplayerMode ? handleToggleTradePanel : undefined}
+            tradePanelOpen={isMultiplayerMode ? tradePanelOpen : false}
+            onToggleUserCharactersPanel={isMultiplayerMode ? handleToggleUserCharactersPanel : undefined}
+            userCharactersPanelOpen={isMultiplayerMode ? userCharactersPanelOpen : false}
+            onToggleUserAccountPanel={isMultiplayerMode ? handleToggleUserAccountPanel : undefined}
+            userAccountPanelOpen={isMultiplayerMode ? userAccountPanelOpen : false}
             onToggleNpcPanel={() => {
               setNpcPanelOpen(true);
               setNpcPanelFocusToken((value) => value + 1);
@@ -1028,8 +1051,8 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
             npcPanelOpen={npcPanelOpen}
             onToggleTimelinePanel={() => setTimelinePanelOpen((prev) => !prev)}
             timelinePanelOpen={timelinePanelOpen}
-            onToggleTasksPanel={() => setTasksPanelOpen((prev) => !prev)}
-            tasksPanelOpen={tasksPanelOpen}
+            onToggleTasksPanel={isMultiplayerMode ? () => setTasksPanelOpen((prev) => !prev) : undefined}
+            tasksPanelOpen={isMultiplayerMode ? tasksPanelOpen : false}
           />
           {worldInfo && (worldInfo.originalPrompt?.trim() || worldInfo.worldDescription?.trim()) && (
             <WorldIntroBanner
@@ -1050,42 +1073,48 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
             onToggleFollow={handleToggleFollowChar}
             events={events}
           />
-          <BuildPanel
-            open={buildPanelOpen}
-            onClose={() => setBuildPanelOpen(false)}
-            buildState={buildState}
-            onBuildStateChange={handleBuildStateChange}
-            mode={buildPanelMode}
-          />
-          <InventoryPanel
-            open={inventoryPanelOpen}
-            onClose={handleToggleInventoryPanel}
-            eventBus={eventBus}
-          />
-          <TradePanel
-            open={tradePanelOpen}
-            onClose={handleToggleTradePanel}
-            eventBus={eventBus}
-          />
-          <UserCharactersPanel
-            open={userCharactersPanelOpen}
-            onClose={handleToggleUserCharactersPanel}
-            eventBus={eventBus}
-          />
-          <UserAccountPanel
-            open={userAccountPanelOpen}
-            onClose={handleToggleUserAccountPanel}
-          />
+          {isMultiplayerMode && (
+            <>
+              <BuildPanel
+                open={buildPanelOpen}
+                onClose={() => setBuildPanelOpen(false)}
+                buildState={buildState}
+                onBuildStateChange={handleBuildStateChange}
+                mode={buildPanelMode}
+              />
+              <InventoryPanel
+                open={inventoryPanelOpen}
+                onClose={handleToggleInventoryPanel}
+                eventBus={eventBus}
+              />
+              <TradePanel
+                open={tradePanelOpen}
+                onClose={handleToggleTradePanel}
+                eventBus={eventBus}
+              />
+              <UserCharactersPanel
+                open={userCharactersPanelOpen}
+                onClose={handleToggleUserCharactersPanel}
+                eventBus={eventBus}
+              />
+              <UserAccountPanel
+                open={userAccountPanelOpen}
+                onClose={handleToggleUserAccountPanel}
+              />
+            </>
+          )}
           <Timeline
             open={timelinePanelOpen}
             onClose={() => setTimelinePanelOpen(false)}
           />
-          <TutorialTasksPanel
-            open={tasksPanelOpen}
-            alwaysVisible
-            onClose={() => setTasksPanelOpen(false)}
-            onExpand={() => setTasksPanelOpen(true)}
-          />
+          {isMultiplayerMode && (
+            <TutorialTasksPanel
+              open={tasksPanelOpen}
+              alwaysVisible
+              onClose={() => setTasksPanelOpen(false)}
+              onExpand={() => setTasksPanelOpen(true)}
+            />
+          )}
           <DialoguePanel
             events={dialogueEvents.filter(
               (e) => {

@@ -6,6 +6,7 @@ import * as authStore from "../store/auth-store.js";
 import { onlinePlayers as onlinePlayersRegistry } from "../services/online-players.js";
 import { findWorldById } from "../utils/world-directories.js";
 import { resolveScopedCharacterRuntime } from "../utils/scoped-character-runtime.js";
+import { isMultiplayerMode } from "../utils/app-mode.js";
 
 interface ClientInfo {
   ws: WebSocket;
@@ -206,12 +207,12 @@ export function setupWebSocket(server: HttpServer, ctx: AppContext): WebSocketSe
     const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
     const requestedName = sanitizeName(query.get("name"));
     const tokenUser = authStore.getUserByToken((query.get("token") ?? "").trim());
-    if (!tokenUser) {
+    if (isMultiplayerMode && !tokenUser) {
       sendTo(ws, { type: "join_rejected", data: { reason: "auth_required" } });
       ws.close(4003, "authentication required");
       return;
     }
-    const requestedUserId = tokenUser.id;
+    const requestedUserId = tokenUser?.id || (query.get("uid") ?? "local_user").trim().slice(0, 64) || "local_user";
     const requestedPid = (query.get("pid") ?? "").trim();
 
     // 身份复用：携带了有效 pid 且该玩家存在 → 复用同一化身（断线重连/刷新）

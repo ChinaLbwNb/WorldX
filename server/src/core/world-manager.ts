@@ -18,6 +18,7 @@ import type {
 } from "../types/index.js";
 import { loadWorldConfig, loadSceneConfig, setWorldDir, getWorldDir, reloadConfigs } from "../utils/config-loader.js";
 import { setSceneConfig, isSceneComplete, getTicksPerScene } from "../utils/time-helpers.js";
+import { LIBRARY_WORLDS_DIR } from "../utils/world-directories.js";
 import * as worldState from "../store/world-state-store.js";
 import * as snapshotStore from "../store/snapshot-store.js";
 import type { SnapshotMeta } from "../store/snapshot-store.js";
@@ -921,6 +922,9 @@ export class WorldManager {
     const worldJsonPath = findWorldJsonPath(worldDir);
     if (!fs.existsSync(worldJsonPath)) return;
     const config = JSON.parse(fs.readFileSync(worldJsonPath, "utf-8")) as WorldConfig;
+    if (isLibraryWorldDir(worldDir)) {
+      return;
+    }
     const mapsRoot = path.join(worldDir, "maps");
     const originDir = path.join(mapsRoot, ORIGIN_MAP_ID);
     fs.mkdirSync(originDir, { recursive: true });
@@ -1502,6 +1506,11 @@ function findWorldJsonPath(worldDir: string): string {
   const rootPath = path.join(worldDir, "world.json");
   if (fs.existsSync(rootPath)) return rootPath;
   return path.join(worldDir, "config", "world.json");
+}
+
+function isLibraryWorldDir(worldDir: string): boolean {
+  const relative = path.relative(LIBRARY_WORLDS_DIR, path.resolve(worldDir));
+  return Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function hashString(value: string): number {

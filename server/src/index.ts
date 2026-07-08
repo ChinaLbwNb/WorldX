@@ -33,6 +33,7 @@ import * as accountAssets from "./store/account-asset-store.js";
 import { getAuthDb } from "./store/auth-store.js";
 import { openDatabaseAt } from "./store/db.js";
 import * as userCharacterStore from "./store/user-character-store.js";
+import { isMultiplayerMode } from "./utils/app-mode.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -242,6 +243,9 @@ function canAccessWorldDirAsset(
     return false;
   }
   const user = getAuthenticatedUser(req);
+  if (!isMultiplayerMode) {
+    return true;
+  }
   if (!canUserAccessWorld(world, user?.id)) {
     res.status(user ? 403 : 401).end();
     return false;
@@ -259,7 +263,7 @@ function createWorldScopedAssetHandler(): express.RequestHandler {
       return;
     }
     const user = getAuthenticatedUser(req);
-    if (!canUserAccessWorld(world, user?.id)) {
+    if (isMultiplayerMode && !canUserAccessWorld(world, user?.id)) {
       res.status(user ? 403 : 401).end();
       return;
     }
@@ -355,7 +359,7 @@ async function main() {
       res.json({ status: "ok", project: "world-x", worldName: null, sceneConfig: null });
       return;
     }
-    if (!user) {
+    if (isMultiplayerMode && !user) {
       res.json({ status: "ok", project: "world-x", worldName: null, sceneConfig: null });
       return;
     }
@@ -387,6 +391,10 @@ async function main() {
   });
 
   const requireAuth: express.RequestHandler = (req, res, next) => {
+    if (!isMultiplayerMode) {
+      next();
+      return;
+    }
     const user = getAuthenticatedUser(req);
     if (!user) {
       res.status(401).json({ error: "Authentication required" });
@@ -404,8 +412,7 @@ async function main() {
     next();
   };
 
-  // All game APIs require a logged-in account. The client app shell and
-  // /api/auth stay public so users can reach the login/register screen.
+  // 多人模式需要账号；常规模式保持原 WorldX 的免登录基础流程。
   app.use("/api", requireAuth);
 
   // World creation & management routes work even without an active world.

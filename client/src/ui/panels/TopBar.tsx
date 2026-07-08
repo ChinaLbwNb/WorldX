@@ -22,6 +22,7 @@ import { networkManager } from "../../systems/NetworkManager";
 type ViewMode = "run" | "replay";
 
 export function TopBar({
+  multiplayerMode = false,
   worldInfo,
   gameTime,
   isDevMode,
@@ -62,6 +63,7 @@ export function TopBar({
   onToggleTasksPanel,
   tasksPanelOpen,
 }: {
+  multiplayerMode?: boolean;
   worldInfo?: WorldInfo | null;
   gameTime: WorldTimeInfo;
   isDevMode: boolean;
@@ -144,7 +146,9 @@ export function TopBar({
     let cancelled = false;
     const lang = i18n.resolvedLanguage || i18n.language || "en";
     const loadWorldChoices = () => {
-      const userCharacterId = networkManager.getSelectedUserCharacterId() || undefined;
+      const userCharacterId = multiplayerMode
+        ? networkManager.getSelectedUserCharacterId() || undefined
+        : undefined;
       apiClient.getGeneratedWorlds(userCharacterId)
         .then((response) => {
           if (cancelled) return;
@@ -196,7 +200,9 @@ export function TopBar({
 
   const handleSwitchToReplay = async () => {
     try {
-      const fresh = await apiClient.getTimelines(networkManager.getSelectedUserCharacterId() || undefined);
+      const fresh = await apiClient.getTimelines(
+        multiplayerMode ? networkManager.getSelectedUserCharacterId() || undefined : undefined,
+      );
       const currentTl = fresh.timelines.find((tl) => tl.id === selectedTimelineId);
       if (!currentTl || currentTl.tickCount <= 0) {
         window.alert(t("topbar.noReplayDataAlert"));
@@ -276,7 +282,7 @@ export function TopBar({
     setSelectedTimelineId(nextTimelineId);
     setIsSwitchingTimeline(true);
     try {
-      const selectedUserCharacterId = networkManager.getSelectedUserCharacterId();
+      const selectedUserCharacterId = multiplayerMode ? networkManager.getSelectedUserCharacterId() : undefined;
       const result = await apiClient.loadTimeline(nextTimelineId, selectedUserCharacterId || undefined);
       if (result.character?.id) {
         networkManager.setSelectedUserCharacter(result.character.id, result.character.name);
@@ -328,7 +334,7 @@ export function TopBar({
     setSelectedWorldId(nextWorldId);
     setIsSwitchingWorld(true);
     try {
-      const selectedUserCharacterId = networkManager.getSelectedUserCharacterId();
+      const selectedUserCharacterId = multiplayerMode ? networkManager.getSelectedUserCharacterId() : undefined;
       if (selectedUserCharacterId) {
         const entered = await apiClient.enterWorldWithUserCharacter(selectedUserCharacterId, nextWorldId);
         networkManager.setSelectedUserCharacter(entered.character.id, entered.character.name);
@@ -512,9 +518,11 @@ export function TopBar({
         <section style={rightDockStyle} aria-label="player menu">
           {hudMenuOpen && (
             <div style={dockMenuStyle}>
-              <HudButton icon="character" label="我的角色"
-                onClick={onToggleUserCharactersPanel ?? (() => EventBus.instance.emit("focus_user_character"))}
-                disabled={inReplayMode} active={userCharactersPanelOpen ?? false} title="管理并切换我的角色" />
+              {multiplayerMode && onToggleUserCharactersPanel && (
+                <HudButton icon="character" label="我的角色"
+                  onClick={onToggleUserCharactersPanel}
+                  disabled={inReplayMode} active={userCharactersPanelOpen ?? false} title="管理并切换我的角色" />
+              )}
               {onToggleNpcPanel && (
                 <HudButton icon="character" label="NPC"
                   onClick={onToggleNpcPanel} disabled={inReplayMode}
@@ -530,9 +538,11 @@ export function TopBar({
                   onClick={onToggleTradePanel} disabled={inReplayMode}
                   active={tradePanelOpen ?? false} title="赠送和交换物品" />
               )}
-              <HudButton icon="online" label="邀请玩家"
-                onClick={() => setOnlinePanelOpen((prev) => !prev)}
-                disabled={inReplayMode} active={onlinePanelOpen} title="查看在线玩家、邀请和踢出访客" />
+              {multiplayerMode && (
+                <HudButton icon="online" label="邀请玩家"
+                  onClick={() => setOnlinePanelOpen((prev) => !prev)}
+                  disabled={inReplayMode} active={onlinePanelOpen} title="查看在线玩家、邀请和踢出访客" />
+              )}
               {onToggleTimelinePanel && (
                 <HudButton icon="chat" label="日志"
                   onClick={onToggleTimelinePanel}
@@ -641,7 +651,7 @@ export function TopBar({
       {managerModalOpen && typeof document !== "undefined"
         ? createPortal(<TimelineManagerModal onClose={() => setManagerModalOpen(false)} />, document.body)
         : null}
-      {onlinePanelOpen && typeof document !== "undefined"
+      {multiplayerMode && onlinePanelOpen && typeof document !== "undefined"
         ? createPortal(<OnlinePlayersPanel onClose={() => setOnlinePanelOpen(false)} />, document.body)
         : null}
     </div>
