@@ -1,0 +1,46 @@
+name: WorldX-Map RQ2 Checks
+
+on:
+  pull_request:
+    paths:
+      - "paper/worldx-map/**"
+      - "generators/map/src/steps/step3-resolve-designed-regions.mjs"
+      - "generators/map/src/steps/step3.2-locate-elements.mjs"
+      - "generators/map/src/utils/tmj-builder.mjs"
+      - "package.json"
+      - ".github/workflows/paper-rq2-check.yml"
+  push:
+    branches:
+      - "paper/worldx-map-pilot"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Syntax check paper runners
+        run: |
+          node --check paper/worldx-map/baselines/direct-coord.mjs
+          node --check paper/worldx-map/baselines/grid-coord.mjs
+          node --check paper/worldx-map/baselines/gog-first-pass.mjs
+          node --check paper/worldx-map/baselines/gog-verified.mjs
+          node --check paper/worldx-map/evaluation/bbox-metrics.mjs
+          node --check paper/worldx-map/evaluation/evaluate-bbox.mjs
+          node --check paper/worldx-map/evaluation/aggregate-bbox.mjs
+
+      - name: Syntax check modified map pipeline
+        run: |
+          node --check generators/map/src/steps/step3-resolve-designed-regions.mjs
+          node --check generators/map/src/steps/step3.2-locate-elements.mjs
+          node --check generators/map/src/utils/tmj-builder.mjs
+
+      - name: Run deterministic paper tests
+        run: node --test paper/worldx-map/tests/*.test.mjs
