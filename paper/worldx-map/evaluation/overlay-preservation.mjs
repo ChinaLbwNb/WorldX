@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
 
 function parseArgs(argv) {
   const args = {};
@@ -190,7 +191,11 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${resolve(process.argv[1])}`).href) {
+const isDirectRun = process.argv[1]
+  ? resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])
+  : false;
+
+if (isDirectRun) {
   main().catch((error) => {
     console.error(`[OverlayPreservation] ${error.stack || error.message}`);
     process.exit(1);
