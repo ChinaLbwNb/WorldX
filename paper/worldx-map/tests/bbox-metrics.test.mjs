@@ -56,3 +56,41 @@ test("missing predictions count as IoU 0 and NCE 1", () => {
   assert.equal(result.meanNCEAll, 0.5);
   assert.equal(result.recallAt05, 0.5);
 });
+
+test("absent targets are scored as false positives separately", () => {
+  const gold = {
+    mapId: "T2",
+    imageWidth: 100,
+    imageHeight: 100,
+    targets: [
+      { id: "present", type: "region", present: true, bbox: { x1: 0, y1: 0, x2: 20, y2: 20 } },
+      { id: "absent_a", type: "element", present: false, bbox: null },
+      { id: "absent_b", type: "element", present: false, bbox: null },
+    ],
+  };
+  const predictions = {
+    method: "test",
+    targets: [
+      { id: "present", status: "located", bbox: { x1: 0, y1: 0, x2: 20, y2: 20 } },
+      { id: "absent_a", status: "located", bbox: { x1: 40, y1: 40, x2: 50, y2: 50 } },
+      { id: "absent_b", status: "missing", bbox: null },
+    ],
+  };
+  const result = evaluatePredictions(gold, predictions);
+  assert.equal(result.absentTargetCount, 2);
+  assert.equal(result.absentFalsePositiveCount, 1);
+  assert.equal(result.absentFalsePositiveRate, 0.5);
+  assert.equal(result.presenceAccuracy, 2 / 3);
+});
+
+test("present gold target without bbox is rejected", () => {
+  const gold = {
+    imageWidth: 100,
+    imageHeight: 100,
+    targets: [{ id: "bad", type: "region", present: true, bbox: null }],
+  };
+  assert.throws(
+    () => evaluatePredictions(gold, { targets: [] }),
+    /Present gold targets missing bbox/,
+  );
+});
