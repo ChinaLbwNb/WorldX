@@ -35,7 +35,10 @@ function saveJson(path, value) {
 
 function summarizeMethod(method, metrics) {
   const rows = metrics.flatMap((metric) => metric.rows || []);
+  const absenceRows = metrics.flatMap((metric) => metric.absenceRows || []);
+  const presenceRows = metrics.flatMap((metric) => metric.presenceRows || []);
   const located = rows.filter((row) => row.located);
+  const absentFalsePositiveCount = absenceRows.filter((row) => row.falsePositive).length;
   return {
     method,
     maps: metrics.length,
@@ -49,6 +52,12 @@ function summarizeMethod(method, metrics) {
     meanNCELocated: round(mean(located.map((row) => row.nce))),
     recallAt03: round(mean(rows.map((row) => row.recallAt03))),
     recallAt05: round(mean(rows.map((row) => row.recallAt05))),
+    absentTargetCount: absenceRows.length,
+    absentFalsePositiveCount,
+    absentFalsePositiveRate: round(
+      absenceRows.length ? absentFalsePositiveCount / absenceRows.length : null,
+    ),
+    presenceAccuracy: round(mean(presenceRows.map((row) => row.correct))),
   };
 }
 
