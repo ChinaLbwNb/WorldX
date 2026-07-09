@@ -1,0 +1,24 @@
+{
+  "mapId": "P01",
+  "image": "path/to/map.png",
+  "imageWidth": 1024,
+  "imageHeight": 576,
+  "targets": [
+    {
+      "id": "pawn_shop",
+      "name": "当铺",
+      "type": "region",
+      "description": "可进入的当铺内部",
+      "visualDescription": "俯视无顶木屋，内有柜台",
+      "placementHint": "左侧"
+    },
+    {
+      "id": "public_well",
+      "name": "水井",
+      "type": "element",
+      "description": "院中的公共水井",
+      "visualDescription": "圆形石井口",
+      "placementHint": "主街旁"
+    }
+  ]
+}

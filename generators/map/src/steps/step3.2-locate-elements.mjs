@@ -18,48 +18,63 @@ const ELEMENT_BOX_STYLE = {
   labelBgColor: "rgba(0,200,200,0.95)",
 };
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
 function prepareInteractiveElements(worldDesign) {
   console.log("[Step 3.2] Preparing interactive elements...");
   const normalized = normalizeWorldDesign(worldDesign);
-  const elements = (normalized.interactiveElements || []).map((el) => ({
-    id: el.id,
-    name: el.name,
-    description: el.description,
-    visualDescription: el.visualDescription,
-    placementHint: el.placementHint,
-    interactions: el.interactions || [],
+  const elements = (normalized.interactiveElements || []).map((element) => ({
+    id: element.id,
+    name: element.name,
+    description: element.description,
+    visualDescription: element.visualDescription,
+    placementHint: element.placementHint,
+    interactions: element.interactions || [],
   }));
 
   console.log(`[Step 3.2] Found ${elements.length} interactive element(s).`);
-  for (const el of elements) {
+  for (const element of elements) {
     console.log(
-      `[Step 3.2]   Element: ${el.id} (${el.name}) — ${el.interactions?.length || 0} interactions`,
+      `[Step 3.2]   Element: ${element.id} (${element.name}) — ${element.interactions?.length || 0} interactions`,
     );
   }
-
   return elements;
 }
 
 function buildElementBoxes(elements) {
   return elements
-    .filter((e) => e.topLeft && e.bottomRight)
-    .map((e) => ({
-      x: e.topLeft.x,
-      y: e.topLeft.y,
-      w: e.bottomRight.x - e.topLeft.x,
-      h: e.bottomRight.y - e.topLeft.y,
+    .filter((element) => element.topLeft && element.bottomRight)
+    .map((element) => ({
+      x: element.topLeft.x,
+      y: element.topLeft.y,
+      w: element.bottomRight.x - element.topLeft.x,
+      h: element.bottomRight.y - element.topLeft.y,
       color: ELEMENT_COLOR,
-      label: e.id,
+      label: element.id,
     }));
 }
 
-// ─── Nano Banana batch overlay ──────────────────────────────────────────────
+function parseConfirmation(raw) {
+  if (!raw || !raw.trim()) throw new Error("Empty element confirmation response");
+  const match = raw.match(/\{[\s\S]*\}/);
+  const parsed = JSON.parse(match ? match[0] : raw);
+  if (typeof parsed.pass !== "boolean") {
+    throw new Error("Element confirmation response missing boolean pass");
+  }
+  return parsed;
+}
 
-async function processBatch({ batchIndex, elements, userPrompt, mapDescription, compressedMap, overlayInputMap, save, additionalConstraints }) {
+async function processBatch({
+  batchIndex,
+  elements,
+  userPrompt,
+  mapDescription,
+  compressedMap,
+  overlayInputMap,
+  save,
+  additionalConstraints,
+}) {
   const IMAGE_EDIT_TIMEOUT_MS = parseInt(
-    process.env.STEP3_2_OVERLAY_TIMEOUT_MS || process.env.STEP3_OVERLAY_TIMEOUT_MS || "240000", 10,
+    process.env.STEP3_2_OVERLAY_TIMEOUT_MS || process.env.STEP3_OVERLAY_TIMEOUT_MS || "240000",
+    10,
   );
 
   const colorAssignments = elements.map((element, index) => ({
@@ -120,9 +135,9 @@ async function processBatch({ batchIndex, elements, userPrompt, mapDescription, 
     console.log(`[Step 3.2] Batch ${batchIndex}: no elements detected from overlay diff`);
   } else {
     console.log(`[Step 3.2] Batch ${batchIndex}: detected ${detectedElements.length} element(s)`);
-    detectedElements.forEach((el) => {
+    detectedElements.forEach((element) => {
       console.log(
-        `[Step 3.2]   ${el.id}: (${el.topLeft.x},${el.topLeft.y}) -> (${el.bottomRight.x},${el.bottomRight.y})`,
+        `[Step 3.2]   ${element.id}: (${element.topLeft.x},${element.topLeft.y}) -> (${element.bottomRight.x},${element.bottomRight.y})`,
       );
     });
   }
@@ -130,16 +145,9 @@ async function processBatch({ batchIndex, elements, userPrompt, mapDescription, 
   return { batchIndex, detectedElements };
 }
 
-// ─── Main export ────────────────────────────────────────────────────────────
-
 /**
- * Locate interactive elements on the map using Nano Banana color overlays + image diff,
- * then run a single Gemini Pro confirmation pass to drop clearly wrong elements.
- * @param {Buffer} compressedBuffer - compressed map PNG
- * @param {object} worldDesign
- * @param {string} userPrompt
- * @param {(name: string, data: any) => void} save
- * @returns {{ elements: object[], annotatedImage: Buffer, reviewPassed: boolean, attempts: number, droppedElementIds: string[] }}
+ * Locate interactive elements using color overlays + image diff, then confirm
+ * recovered boxes. Verification outages never count as successful review.
  */
 export async function locateElements(compressedBuffer, worldDesign, userPrompt, save) {
   const preparedElements = prepareInteractiveElements(worldDesign);
@@ -149,6 +157,8 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
       elements: [],
       annotatedImage: compressedBuffer,
       reviewPassed: true,
+      verificationStatus: "not_required",
+      verifierUnavailable: false,
       attempts: 0,
       droppedElementIds: [],
     };
@@ -156,13 +166,14 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
 
   const elements = JSON.parse(JSON.stringify(preparedElements));
   const mapDescription = worldDesign.mapDescription || userPrompt;
-
   const MAX_RETRIES = parseInt(
-    process.env.STEP3_2_MAX_RETRIES || process.env.STEP3_MAX_RETRIES || "2", 10,
+    process.env.STEP3_2_MAX_RETRIES || process.env.STEP3_MAX_RETRIES || "2",
+    10,
   );
   const TOTAL_ATTEMPTS = Math.max(1, MAX_RETRIES + 1);
   const CONFIRM_TIMEOUT_MS = parseInt(
-    process.env.STEP3_2_CONFIRM_TIMEOUT_MS || process.env.STEP3_CONFIRM_TIMEOUT_MS || "90000", 10,
+    process.env.STEP3_2_CONFIRM_TIMEOUT_MS || process.env.STEP3_CONFIRM_TIMEOUT_MS || "90000",
+    10,
   );
   const { width: imageWidth, height: imageHeight } = await getImageSize(compressedBuffer);
   const overlayWorkingImage = await buildOverlayWorkingImage(compressedBuffer);
@@ -173,12 +184,14 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
   }
 
   let reviewPassed = false;
+  let verificationStatus = "not_run";
+  let verifierUnavailable = false;
   let attemptsUsed = 0;
   let lastProblematicIds = [];
   let additionalConstraints = "";
 
   for (let attempt = 1; attempt <= TOTAL_ATTEMPTS; attempt++) {
-    const pendingElements = elements.filter((e) => !e.topLeft || !e.bottomRight);
+    const pendingElements = elements.filter((element) => !element.topLeft || !element.bottomRight);
     if (pendingElements.length === 0) break;
 
     attemptsUsed = attempt;
@@ -186,10 +199,8 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
       `[Step 3.2] Attempt ${attempt}/${TOTAL_ATTEMPTS}: locating ${pendingElements.length} element(s) via color overlay...`,
     );
 
-    // ── Phase A: Batch overlay via Nano Banana (only for pending elements) ──
     const batches = chunkArray(pendingElements, MAX_BATCH_SIZE);
     console.log(`[Step 3.2] Split into ${batches.length} batch(es), max ${MAX_BATCH_SIZE} per batch`);
-
     const attemptSave = attempt === 1
       ? save
       : (name, data) => save(name.replace(/\.png$/, `-a${attempt}.png`), data);
@@ -209,22 +220,20 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
       ),
     );
 
-    const detectedElements = batchResults.flatMap((r) => r.detectedElements);
-    const detectedMap = new Map(detectedElements.map((d) => [d.id, d]));
-
+    const detectedElements = batchResults.flatMap((result) => result.detectedElements);
+    const detectedMap = new Map(detectedElements.map((detected) => [detected.id, detected]));
     for (const element of elements) {
       if ((!element.topLeft || !element.bottomRight) && detectedMap.has(element.id)) {
-        const d = detectedMap.get(element.id);
-        element.topLeft = d.topLeft;
-        element.bottomRight = d.bottomRight;
+        const detected = detectedMap.get(element.id);
+        element.topLeft = detected.topLeft;
+        element.bottomRight = detected.bottomRight;
       }
     }
 
-    const locatedElements = elements.filter((e) => e.topLeft && e.bottomRight);
+    const locatedElements = elements.filter((element) => element.topLeft && element.bottomRight);
     const stillMissingIds = elements
-      .filter((e) => !e.topLeft || !e.bottomRight)
-      .map((e) => e.id);
-
+      .filter((element) => !element.topLeft || !element.bottomRight)
+      .map((element) => element.id);
     if (stillMissingIds.length > 0) {
       console.warn(
         `[Step 3.2] Attempt ${attempt}: elements not detected from overlays: ${stillMissingIds.join(", ")}`,
@@ -240,21 +249,23 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
       continue;
     }
 
-    // ── Phase B: Draw annotated image for confirmation ──
-    const boxes = buildElementBoxes(locatedElements);
-    const annotatedImage = await drawBoundingBoxes(compressedBuffer, boxes, ELEMENT_BOX_STYLE);
+    const annotatedImage = await drawBoundingBoxes(
+      compressedBuffer,
+      buildElementBoxes(locatedElements),
+      ELEMENT_BOX_STYLE,
+    );
     save(`03.2-elements-attempt-${attempt}.png`, annotatedImage);
 
-    // ── Phase C: Gemini Pro confirmation pass ──
     const elementsList = locatedElements
-      .map((e) => {
-        const lines = [`- ${e.id}: ${e.name} (${e.topLeft.x},${e.topLeft.y})→(${e.bottomRight.x},${e.bottomRight.y})`];
-        if (e.visualDescription) lines.push(`  外观：${e.visualDescription}`);
-        if (e.placementHint) lines.push(`  位置提示：${e.placementHint}`);
+      .map((element) => {
+        const lines = [
+          `- ${element.id}: ${element.name} (${element.topLeft.x},${element.topLeft.y})→(${element.bottomRight.x},${element.bottomRight.y})`,
+        ];
+        if (element.visualDescription) lines.push(`  外观：${element.visualDescription}`);
+        if (element.placementHint) lines.push(`  位置提示：${element.placementHint}`);
         return lines.join("\n");
       })
       .join("\n");
-
     const confirmPrompt = loadPrompt("step3.2-confirm-elements.md", {
       elementsList,
       imageWidth,
@@ -269,18 +280,19 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
         logStep: `Step 3.2 confirm attempt ${attempt}`,
         requestTimeoutMs: CONFIRM_TIMEOUT_MS,
       });
-      const match = raw.match(/\{[\s\S]*\}/);
-      confirmResult = match ? JSON.parse(match[0]) : { pass: true, problematic_element_ids: [] };
-    } catch (e) {
+      confirmResult = parseConfirmation(raw);
+      verificationStatus = confirmResult.pass ? "verified_pass" : "verified_fail";
+    } catch (error) {
+      verifierUnavailable = true;
+      verificationStatus = "verifier_unavailable";
       console.warn(
-        `[Step 3.2] Attempt ${attempt}: confirmation call failed (keeping all detected elements): ${e.message}`,
+        `[Step 3.2] Attempt ${attempt}: confirmation unavailable; keeping detected elements without counting review as pass: ${error.message}`,
       );
-      confirmResult = { pass: true, problematic_element_ids: [] };
+      break;
     }
 
     const problematicIds = confirmResult.problematic_element_ids || [];
     lastProblematicIds = problematicIds;
-
     if (confirmResult.pass) {
       console.log(`[Step 3.2] Attempt ${attempt}: confirmation passed — all detected elements accepted.`);
       reviewPassed = true;
@@ -290,8 +302,6 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
     console.log(
       `[Step 3.2] Attempt ${attempt}: flagged ${problematicIds.length} problematic element(s): ${problematicIds.join(", ")}`,
     );
-
-    // Accumulate review feedback as constraints for next overlay attempt
     const feedback = confirmResult.feedback || {};
     const feedbackLines = problematicIds
       .filter((id) => feedback[id])
@@ -302,31 +312,28 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
       console.log(`[Step 3.2] Accumulated constraints for next attempt: ${feedbackLines.join("; ")}`);
     }
 
-    // Clear problematic boxes.
-    // On retry: they become pending again and will be re-detected next attempt.
-    // On the final attempt: they stay cleared and are dropped (existing behavior).
-    if (problematicIds.length > 0) {
-      for (const element of elements) {
-        if (problematicIds.includes(element.id)) {
-          element.topLeft = undefined;
-          element.bottomRight = undefined;
-        }
+    for (const element of elements) {
+      if (problematicIds.includes(element.id)) {
+        element.topLeft = undefined;
+        element.bottomRight = undefined;
       }
     }
   }
 
-  const finalElements = elements.filter((e) => e.topLeft && e.bottomRight);
+  const finalElements = elements.filter((element) => element.topLeft && element.bottomRight);
   const droppedElementIds = elements
-    .filter((e) => !e.topLeft || !e.bottomRight)
-    .map((e) => e.id);
-
+    .filter((element) => !element.topLeft || !element.bottomRight)
+    .map((element) => element.id);
   let finalAnnotatedImage = compressedBuffer;
   if (finalElements.length > 0) {
-    const finalBoxes = buildElementBoxes(finalElements);
-    finalAnnotatedImage = await drawBoundingBoxes(compressedBuffer, finalBoxes, ELEMENT_BOX_STYLE);
+    finalAnnotatedImage = await drawBoundingBoxes(
+      compressedBuffer,
+      buildElementBoxes(finalElements),
+      ELEMENT_BOX_STYLE,
+    );
   }
 
-  if (!reviewPassed && lastProblematicIds.length > 0) {
+  if (!reviewPassed && !verifierUnavailable && lastProblematicIds.length > 0) {
     console.log(
       `[Step 3.2] Retries exhausted; dropped ${lastProblematicIds.length} problematic element(s): ${lastProblematicIds.join(", ")}`,
     );
@@ -336,27 +343,26 @@ export async function locateElements(compressedBuffer, worldDesign, userPrompt, 
     elements: finalElements,
     annotatedImage: finalAnnotatedImage,
     reviewPassed,
+    verificationStatus,
+    verifierUnavailable,
     attempts: attemptsUsed,
     droppedElementIds,
   };
 }
 
-/**
- * Scale element coordinates from compressed to original resolution.
- */
 export function scaleElements(elements, origWidth, compressedWidth) {
   const ratio = origWidth / compressedWidth;
   return elements
-    .filter((e) => e.topLeft && e.bottomRight)
-    .map((e) => ({
-      ...e,
+    .filter((element) => element.topLeft && element.bottomRight)
+    .map((element) => ({
+      ...element,
       topLeft: {
-        x: Math.round(e.topLeft.x * ratio),
-        y: Math.round(e.topLeft.y * ratio),
+        x: Math.round(element.topLeft.x * ratio),
+        y: Math.round(element.topLeft.y * ratio),
       },
       bottomRight: {
-        x: Math.round(e.bottomRight.x * ratio),
-        y: Math.round(e.bottomRight.y * ratio),
+        x: Math.round(element.bottomRight.x * ratio),
+        y: Math.round(element.bottomRight.y * ratio),
       },
     }));
 }

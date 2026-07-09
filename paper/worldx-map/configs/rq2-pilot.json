@@ -1,0 +1,64 @@
+{
+  "version": "1.2",
+  "supersedes": "1.1",
+  "frozen": true,
+  "freezeNote": "v1.2 was frozen before any pilot model run. It retains v1.1 matched batching and absent-target scoring, and adds overlay identity-preservation metrics after a pre-run 2025-2026 nearest-neighbor literature audit.",
+  "researchQuestion": "Does generative overlay grounding improve spatial localization accuracy over direct coordinate prediction?",
+  "methods": ["DirectCoord", "GridCoord", "GOG", "GOG-V"],
+  "sample": {
+    "promptSet": "../benchmark/pilot-prompts.json",
+    "maps": 10,
+    "targetPolicy": "Evaluate every planned region and interactive element. Do not remove targets that are absent in the rendered map.",
+    "expectedTargetsPerMap": "2-8"
+  },
+  "fairnessControls": {
+    "sameImagePerMap": true,
+    "sameTargetListPerMap": true,
+    "sharedMapDescription": true,
+    "typeSeparatedBatches": true,
+    "maxTargetsPerBatch": 4,
+    "note": "DirectCoord and GridCoord match GOG's region/element separation and maximum batch size to reduce batching confounds."
+  },
+  "primaryMetrics": [
+    "meanIoUAll",
+    "meanNCEAll",
+    "recallAt03",
+    "missingRate"
+  ],
+  "secondaryMetrics": [
+    "meanIoULocated",
+    "meanNCELocated",
+    "recallAt05",
+    "absentFalsePositiveRate",
+    "presenceAccuracy",
+    "outsideTargetChangeRate",
+    "outsideTargetMeanAbsoluteChange"
+  ],
+  "metricPolicy": {
+    "missingPredictionIoU": 0,
+    "missingPredictionNCE": 1,
+    "presentGoldOnlyForLocalizationMetrics": true,
+    "absentTargetsRetainedForSeparatePresenceAnalysis": true,
+    "absentTargetPredictedLocatedCountsAsFalsePositive": true,
+    "overlayPreservation": {
+      "scope": "GOG overlay artifacts only",
+      "reference": "original compressed map",
+      "excludeRegion": "union of human gold bboxes for targets assigned to the overlay batch, dilated by 5 percent of bbox width and height",
+      "outsideTargetChangeRateThreshold": 12,
+      "note": "Measure unintended non-target drift. These metrics are audit metrics, not primary superiority endpoints."
+    }
+  },
+  "goNoGo": {
+    "go": "GOG improves at least two primary metrics over DirectCoord with the same direction on a majority of maps, without a materially worse absentFalsePositiveRate and without severe outside-target drift.",
+    "partialGo": "GOG does not improve mean IoU but materially lowers missing rate or NCE; reframe the claim around robustness rather than precision, subject to absent-target and overlay-preservation analysis.",
+    "noGo": "DirectCoord dominates GOG on meanIoUAll, meanNCEAll, recallAt03, and missingRate; or GOG's apparent gains depend on severe non-target image drift. Do not retain GOG as the main contribution without a new mechanism."
+  },
+  "auditRules": [
+    "Do not edit pilot prompts after the first generation run.",
+    "Do not tune extraction thresholds on the ten pilot maps after viewing aggregate test metrics.",
+    "Record model identifiers, timestamps, raw responses, call counts, and source artifacts.",
+    "A verifier API failure is verifier_unavailable, never verified_pass.",
+    "Report non-target overlay drift for GOG artifacts; do not hide geometry changes caused by the image editor.",
+    "Any protocol change after the first pilot model run requires a new versioned config."
+  ]
+}

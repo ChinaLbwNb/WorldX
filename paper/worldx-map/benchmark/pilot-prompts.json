@@ -1,0 +1,88 @@
+{
+  "version": "1.0",
+  "frozen": true,
+  "researchQuestion": "RQ2: Does generative overlay grounding improve spatial localization accuracy over direct coordinate prediction?",
+  "samplingNote": "Ten fixed prompts spanning language, topology, theme, and complexity. Do not edit after pilot runs begin; create a new version instead.",
+  "prompts": [
+    {
+      "id": "P01",
+      "language": "zh",
+      "theme": "historical",
+      "topology": "outdoor",
+      "complexity": "high",
+      "prompt": "北宋汴京夜市，正上方俯视游戏地图，有一间可进入的当铺、一座茶棚、一个炊饼摊和一口水井，主街贯穿场景并连接关键区域，不要人物。"
+    },
+    {
+      "id": "P02",
+      "language": "zh",
+      "theme": "modern",
+      "topology": "indoor",
+      "complexity": "low",
+      "prompt": "深夜便利店内部，正上方俯视游戏地图，包含收银区、两排主要货架和一台靠墙咖啡机，中央过道保持清晰可行走，不要人物。"
+    },
+    {
+      "id": "P03",
+      "language": "zh",
+      "theme": "mystery",
+      "topology": "mixed",
+      "complexity": "high",
+      "prompt": "山中古寺的悬疑雨夜，正上方俯视游戏地图，包含可进入的偏殿、藏经室、院中石灯和古井，院路连接各处，不要人物。"
+    },
+    {
+      "id": "P04",
+      "language": "zh",
+      "theme": "social",
+      "topology": "mixed",
+      "complexity": "low",
+      "prompt": "海边青年旅舍公共空间，正上方俯视游戏地图，包含可进入的公共厨房和室外篝火区，二者之间有清楚通道，不要人物。"
+    },
+    {
+      "id": "P05",
+      "language": "zh",
+      "theme": "sci-fi",
+      "topology": "indoor",
+      "complexity": "high",
+      "prompt": "火星科研站内部，正上方俯视游戏地图，包含实验室、医疗舱、休息舱和中央氧气控制台，各舱室通过通道连接，不要人物。"
+    },
+    {
+      "id": "P06",
+      "language": "en",
+      "theme": "historical",
+      "topology": "outdoor",
+      "complexity": "low",
+      "prompt": "A top-down game map of a medieval riverside market with an enterable apothecary and a public fountain, connected by a clear stone path, no people."
+    },
+    {
+      "id": "P07",
+      "language": "en",
+      "theme": "modern",
+      "topology": "mixed",
+      "complexity": "high",
+      "prompt": "A top-down game map of a small urban community center with an enterable reading room, workshop room, courtyard garden, and outdoor vending machine, with clear paths and no people."
+    },
+    {
+      "id": "P08",
+      "language": "en",
+      "theme": "mystery",
+      "topology": "indoor",
+      "complexity": "high",
+      "prompt": "A top-down game map of an abandoned hotel floor with an enterable reception room, dining room, storage room, and an old grandfather clock in the main hall, no people."
+    },
+    {
+      "id": "P09",
+      "language": "en",
+      "theme": "social",
+      "topology": "outdoor",
+      "complexity": "high",
+      "prompt": "A top-down game map of a neighborhood summer festival with a food stall, small shrine, information booth, and central dance platform connected by open walking space, no people."
+    },
+    {
+      "id": "P10",
+      "language": "en",
+      "theme": "sci-fi",
+      "topology": "mixed",
+      "complexity": "low",
+      "prompt": "A top-down game map of a cyberpunk rooftop safehouse with an enterable operations room and an outdoor antenna console, connected by a clear walkway, no people."
+    }
+  ]
+}
